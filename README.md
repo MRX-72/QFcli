@@ -44,6 +44,101 @@ python main.py --compare AAPL MSFT
 python main.py TSLA --period 2y
 ```
 
+## Example Outputs
+
+### Single Stock Analysis
+
+```bash
+$ python main.py AAPL
+```
+
+```
+╔═══════════════════════════ QUANT ANALYSIS ════════════════════════════╗
+║ AAPL - Apple Inc.                                                     ║
+╚═══════════════════════════════════════════════════════════════════════╝
+
+╭───────────────────────────────────────────────────────────────────────╮
+│ Current Price: $278.84                                                │
+│ Data Period: 2024-12-12 to 2025-12-12                                 │
+╰───────────────────────────────────────────────────────────────────────╯
+
+              Returns Analysis
+╭────────────────────────────────┬─────────╮
+│ Cumulative Return              │ +12.96% │
+│ Average Daily Return           │  +0.07% │
+│ Annualized Volatility          │ +32.68% │
+│ Sharpe Ratio                   │    0.54 │
+╰────────────────────────────────┴─────────╯
+
+         Moving Averages
+╭─────────┬───────────┬─────────╮
+│ Period  │ SMA Value │ Signal  │
+├─────────┼───────────┼─────────┤
+│ SMA-20  │   $276.33 │ BULLISH │
+│ SMA-50  │   $267.74 │ BULLISH │
+│ SMA-200 │   $228.63 │ BULLISH │
+╰─────────┴───────────┴─────────╯
+
+                 Risk Metrics
+╭────────────────────────────────┬───────────╮
+│ Max Drawdown                   │   -33.36% │
+│ ROC (12-day)                   │    +0.68% │
+│ Risk Score                     │ HIGH RISK │
+╰────────────────────────────────┴───────────╯
+```
+
+### Stock Comparison
+
+```bash
+$ python main.py --compare AAPL MSFT
+```
+
+```
+                    AAPL vs MSFT - Comparison
+╔═══════════════════════╤═══════════════╤═══════════════╤══════════╗
+║ Metric                │          AAPL │          MSFT │  Winner  ║
+╟───────────────────────┼───────────────┼───────────────┼──────────╢
+║ Company               │    Apple Inc. │    Microsoft  │          ║
+║ Current Price         │       $278.83 │       $480.37 │          ║
+╟───────────────────────┼───────────────┼───────────────┼──────────╢
+║ RETURNS               │               │               │          ║
+╟───────────────────────┼───────────────┼───────────────┼──────────╢
+║ Cumulative Return     │       +12.96% │        +7.64% │   AAPL   ║
+║ Volatility            │       +32.68% │       +24.63% │   MSFT   ║
+║ Sharpe Ratio          │          0.54 │          0.42 │   AAPL   ║
+╟───────────────────────┼───────────────┼───────────────┼──────────╢
+║ RISK METRICS          │               │               │          ║
+╟───────────────────────┼───────────────┼───────────────┼──────────╢
+║ Max Drawdown          │       -33.36% │       -21.83% │   MSFT   ║
+║ ROC (12-day)          │        +0.67% │        +0.71% │   MSFT   ║
+║ Risk Score            │     HIGH RISK │      MODERATE │   MSFT   ║
+╟───────────────────────┼───────────────┼───────────────┼──────────╢
+║ SIGNALS               │               │               │          ║
+╟───────────────────────┼───────────────┼───────────────┼──────────╢
+║ Bullish Signals       │   3/3 Bullish │   1/3 Bullish │   AAPL   ║
+╚═══════════════════════╧═══════════════╧═══════════════╧══════════╝
+
+╔═════════════════════════ RECOMMENDATION ══════════════════════════╗
+║ Overall Score: AAPL (3) vs MSFT (4)                               ║
+║                                                                   ║
+║ AAPL Strengths:                                                   ║
+║   + Higher cumulative return (12.96% vs 7.64%)                    ║
+║   + Better Sharpe ratio (0.54 vs 0.42)                            ║
+║   + More bullish signals (3/3 vs 1/3)                             ║
+║                                                                   ║
+║ MSFT Strengths:                                                   ║
+║   + Lower volatility (24.63% vs 32.68%)                           ║
+║   + Smaller max drawdown (-21.83% vs -33.36%)                     ║
+║   + Better risk score (MODERATE vs HIGH RISK)                     ║
+║                                                                   ║
+║ Overall: MSFT shows stronger overall performance                  ║
+║                                                                   ║
+║ Investor Type Recommendations:                                    ║
+║   - AAPL for growth-focused investors (higher returns, higher risk)║
+║   - MSFT for risk-averse investors (lower volatility)             ║
+╚═══════════════════════════════════════════════════════════════════╝
+```
+
 ## Usage
 
 ```
