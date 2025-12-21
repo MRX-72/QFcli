@@ -5,7 +5,7 @@ Core financial metrics calculations.
 
 import numpy as np
 import pandas as pd
-from typing import Union
+from typing import Union, Dict
 
 
 def cumulative_return(prices: Union[pd.Series, np.ndarray]) -> float:
@@ -164,3 +164,36 @@ def average_return(returns: pd.Series, annualize: bool = True) -> float:
         avg_return = avg_return * 252
     
     return avg_return
+
+
+def daily_return_stats(returns: pd.Series) -> Dict[str, float]:
+    """
+    Calculate statistics about daily returns.
+    
+    Args:
+        returns: Series of daily returns
+    
+    Returns:
+        Dictionary with 'best_day', 'worst_day', 'positive_days', 'total_days', 'win_ratio'
+    """
+    clean_returns = returns.dropna()
+    
+    if clean_returns.empty:
+        return {
+            'best_day': np.nan,
+            'worst_day': np.nan,
+            'win_ratio': np.nan
+        }
+        
+    best_day = clean_returns.max()
+    worst_day = clean_returns.min()
+    
+    positive_days = (clean_returns > 0).sum()
+    total_days = len(clean_returns)
+    win_ratio = positive_days / total_days if total_days > 0 else 0
+    
+    return {
+        'best_day': best_day,
+        'worst_day': worst_day,
+        'win_ratio': win_ratio
+    }

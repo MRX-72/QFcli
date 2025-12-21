@@ -141,3 +141,88 @@ def bollinger_bands(prices: Union[pd.Series, np.ndarray],
         'middle': middle,
         'lower': lower
     }
+
+
+def calculate_ema(prices: Union[pd.Series, np.ndarray], window: int) -> float:
+    """
+    Calculate Exponential Moving Average (EMA).
+    
+    Args:
+        prices: Series or array of closing prices
+        window: Window size
+    
+    Returns:
+        EMA value for the most recent period
+    """
+    if isinstance(prices, np.ndarray):
+        prices = pd.Series(prices)
+        
+    ema = prices.ewm(span=window, adjust=False).mean()
+    return ema.iloc[-1]
+
+
+def calculate_rsi(prices: Union[pd.Series, np.ndarray], period: int = 14) -> float:
+    """
+    Calculate Relative Strength Index (RSI).
+    
+    Formula: RSI = 100 - (100 / (1 + RS))
+    where RS = Average Gain / Average Loss
+    
+    Args:
+        prices: Series or array of closing prices
+        period: Lookback period (default: 14)
+    
+    Returns:
+        RSI value (0-100)
+    """
+    if isinstance(prices, np.ndarray):
+        prices = pd.Series(prices)
+        
+    delta = prices.diff()
+    
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    return rsi.iloc[-1]
+
+
+def calculate_macd(prices: Union[pd.Series, np.ndarray], 
+                  fast_period: int = 12, 
+                  slow_period: int = 26, 
+                  signal_period: int = 9) -> Dict[str, float]:
+    """
+    Calculate MACD (Moving Average Convergence Divergence).
+    
+    Args:
+        prices: Series or array of closing prices
+        fast_period: Fast EMA period (default: 12)
+        slow_period: Slow EMA period (default: 26)
+        signal_period: Signal line EMA period (default: 9)
+    
+    Returns:
+        Dictionary with 'macd_line', 'signal_line', 'histogram'
+    """
+    if isinstance(prices, np.ndarray):
+        prices = pd.Series(prices)
+        
+    # Calculate Fast and Slow EMAs
+    exp1 = prices.ewm(span=fast_period, adjust=False).mean()
+    exp2 = prices.ewm(span=slow_period, adjust=False).mean()
+    
+    # MACD Line
+    macd = exp1 - exp2
+    
+    # Signal Line
+    signal = macd.ewm(span=signal_period, adjust=False).mean()
+    
+    # Histogram
+    hist = macd - signal
+    
+    return {
+        'macd_line': macd.iloc[-1],
+        'signal_line': signal.iloc[-1],
+        'histogram': hist.iloc[-1]
+    }

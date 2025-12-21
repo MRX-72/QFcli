@@ -139,6 +139,27 @@ def create_returns_table(metrics: Dict[str, Any]) -> Table:
     return table
 
 
+    return table
+
+
+def create_daily_stats_table(metrics: Dict[str, Any]) -> Table:
+    """
+    Create a Rich table for daily return statistics.
+    """
+    table = Table(title="Daily Return Stats", box=box.ROUNDED, show_header=False, title_style="bold blue")
+    
+    table.add_column("Metric", style="bold", width=30)
+    table.add_column("Value", justify="right")
+    
+    stats = metrics['daily_stats']
+    
+    table.add_row("Best Day", format_percentage(stats['best_day']))
+    table.add_row("Worst Day", format_percentage(stats['worst_day']))
+    table.add_row("Win Ratio", format_percentage(stats['win_ratio']))
+    
+    return table
+
+
 def create_ma_table(metrics: Dict[str, Any]) -> Table:
     """
     Create a Rich table for moving averages.
@@ -167,6 +188,39 @@ def create_ma_table(metrics: Dict[str, Any]) -> Table:
             table.add_row(f"SMA-{window}", format_price(sma), signal_text)
         else:
             table.add_row(f"SMA-{window}", Text("N/A", style="dim"), Text("INSUFFICIENT DATA", style="yellow"))
+    
+    return table
+
+
+    return table
+
+
+def create_technical_table(metrics: Dict[str, Any]) -> Table:
+    """
+    Create a Rich table for technical indicators (RSI, MACD, BB).
+    """
+    table = Table(title="Technical Indicators", box=box.ROUNDED, show_header=False, title_style="bold yellow")
+    
+    table.add_column("Metric", style="bold", width=30)
+    table.add_column("Value", justify="right")
+    
+    # RSI
+    rsi = metrics['rsi']
+    # RSI Logic: 30-70 is standard, >70 overbought (red), <30 oversold (green or red depending on strategy, usually warning)
+    # Let's use simple coloring: Green for neutral, Red for extreme
+    rsi_color = "green" if 30 <= rsi <= 70 else "red"
+    table.add_row("RSI (14)", Text(f"{rsi:.2f}", style=rsi_color))
+    
+    # MACD
+    macd = metrics['macd']
+    macd_text = f"{macd['macd_line']:.2f} / {macd['signal_line']:.2f}"
+    hist_color = "green" if macd['histogram'] > 0 else "red"
+    table.add_row("MACD (12,26,9)", Text(macd_text, style=hist_color))
+    
+    # Bollinger Bands
+    bb = metrics['bollinger_bands']
+    bb_text = f"U: {bb['upper']:.2f} / L: {bb['lower']:.2f}"
+    table.add_row("Bollinger Bands (20,2)", bb_text)
     
     return table
 
@@ -244,10 +298,13 @@ def format_results(ticker: str, company_name: str, metrics: Dict[str, Any]) -> N
     # Tables
     console.print(create_returns_table(metrics))
     console.print()
+    console.print(create_daily_stats_table(metrics))
+    console.print()
     console.print(create_ma_table(metrics))
     console.print()
-    console.print(create_risk_table(metrics))
+    console.print(create_technical_table(metrics))
     console.print()
+
 
 
 def create_comparison_table(comparison: Dict[str, Any]) -> Table:

@@ -20,12 +20,17 @@ from quant_finance.metrics import (
     sharpe_ratio,
     max_drawdown,
     risk_score,
-    average_return
+    average_return,
+    daily_return_stats
 )
 from quant_finance.indicators import (
     calculate_all_smas,
     moving_average_signals,
-    rate_of_change
+    rate_of_change,
+    calculate_ema,
+    calculate_rsi,
+    calculate_macd,
+    bollinger_bands
 )
 from quant_finance.output import format_results, format_comparison_results
 from quant_finance.comparison import compare_stocks
@@ -79,11 +84,20 @@ def analyze_stock(ticker: str, period: str = '1y', risk_free_rate: float = 0.0) 
             avg_ret = average_return(returns, annualize=True)
             progress.update(task, completed=True)
             
+            progress.update(task, completed=True)
+            
             # Step 5: Calculate technical indicators
             task = progress.add_task("[cyan]Analyzing technical indicators...", total=None)
             sma_values = calculate_all_smas(prices, windows=[20, 50, 200])
             signals = moving_average_signals(current_price, sma_values)
             roc = rate_of_change(prices, period=12)
+            
+            # New indicators
+            rsi = calculate_rsi(prices)
+            macd_data = calculate_macd(prices)
+            bb_data = bollinger_bands(prices)
+            daily_stats = daily_return_stats(returns)
+            
             progress.update(task, completed=True)
             
             # Step 6: Calculate risk score
@@ -102,7 +116,11 @@ def analyze_stock(ticker: str, period: str = '1y', risk_free_rate: float = 0.0) 
             'sma_values': sma_values,
             'signals': signals,
             'roc': roc,
-            'risk_score': risk_rating
+            'risk_score': risk_rating,
+            'rsi': rsi,
+            'macd': macd_data,
+            'bollinger_bands': bb_data,
+            'daily_stats': daily_stats
         }
         
         return {
