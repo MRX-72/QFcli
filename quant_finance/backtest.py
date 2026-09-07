@@ -199,7 +199,13 @@ def size_position(
                      annual volatility, capped at max_leverage. Volatility
                      targets position size inversely, so it naturally cuts
                      exposure in choppy markets (a classical risk-parity
-                     podding approach).
+                     podding approach). With ``slow_window`` set (default 0),
+                     exposure is instead scaled by the SLOW realized vol
+                     (Moreira-Muir style vol management) so positions do not
+                     chase last week's vol; the fast target is retained as an
+                     upper bound, so a sudden vol spike still cuts exposure
+                     immediately (crash guard). ``slow_window`` must be >=
+                     ``window``.
         kelly      - fractional Kelly on trailing win-rate / average win /
                      average loss over the trailing window:
                      f = win_rate - (1 - win_rate) / (avg_win / avg_loss),
@@ -228,9 +234,23 @@ def size_position(
     if sizer == 'target_vol':
         target = float(kw.get('target_vol', 0.15))
         window = int(kw.get('window', 20))
+        slow_window = int(kw.get('slow_window', 0))
         max_lev = float(kw.get('max_leverage', 1.0))
+        if slow_window and slow_window < window:
+            raise ValueError(
+                f"slow_window ({slow_window}) must be >= window ({window}) "
+                "for target_vol sizing.")
         vol = returns.rolling(window=window).std(ddof=1) * np.sqrt(252)
-        exposure = (target / vol.replace(0, np.nan)).clip(upper=max_lev)
+        fast_exposure = (target / vol.replace(0, np.nan)).clip(upper=max_lev)
+        exposure = fast_exposure
+        if slow_window:
+            slow_vol = returns.rolling(window=slow_window).std(ddof=1) * np.sqrt(252)
+            slow_exposure = target / slow_vol.replace(0, np.nan)
+            # vol-management: smooth MM scaling, but never more aggressive than
+            # the fast vol-target allows (crash guard); until the slow window
+            # fills, fall back to the fast scaling rather than a flat 1.0
+            exposure = slow_exposure.clip(upper=fast_exposure)
+            exposure = exposure.where(exposure.notna(), fast_exposure).clip(upper=max_lev)
         exposure = exposure.reindex(s.index).fillna(1.0).clip(upper=max_lev)
         return s * exposure
 

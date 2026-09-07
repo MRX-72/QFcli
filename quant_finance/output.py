@@ -1295,6 +1295,14 @@ def format_paper_trade_results(
             Text(f"{new_days:+d}" if new_days else "none yet", style="cyan" if new_days else "dim")
         )
 
+    stable = state.get('stable_days', 1)
+    if stable > 1:
+        table.add_row("Stability Filter", Text(f"switch after {stable} winning days", style="magenta"))
+        table.add_row("Param Switches",
+                      Text(str(state.get('n_switches', 0)), style="cyan"))
+        table.add_row("Mean Days In Force",
+                      Text(f"{state.get('mean_days_in_force', np.nan):.1f}", style="cyan"))
+
     table.add_section()
     table.add_row("Paper Total Return", format_percentage(state.get('paper_total_return', np.nan)))
     table.add_row("Paper Annual Return", format_percentage(state.get('paper_annual_return', np.nan)))
@@ -1330,3 +1338,20 @@ def format_paper_trade_results(
             rate_table.add_row(Text(label, style="yellow"), Text(f"{frac*100:.1f}%"))
         console.print(rate_table)
         console.print()
+
+    if state.get('stable_days', 1) > 1:
+        force = state.get('days_in_force') or {}
+        if force:
+            force_table = Table(title="Config Time in Force (traded days)",
+                                box=box.ROUNDED, title_style="bold magenta")
+            force_table.add_column("Config", style="bold")
+            force_table.add_column("Days active", justify="right")
+            for key, days in force.items():
+                try:
+                    params = json.loads(key)
+                    label = _params_text(params)
+                except Exception:
+                    label = str(key)
+                force_table.add_row(Text(label, style="yellow"), Text(str(days)))
+            console.print(force_table)
+            console.print()

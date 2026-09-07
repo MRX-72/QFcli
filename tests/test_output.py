@@ -278,7 +278,7 @@ class TestBacktestOutput:
             'paper_sharpe': 0.9, 'baseline_total_return': 0.10,
             'baseline_annual_return': 0.09, 'alpha': 0.01,
             'active_return': -0.005, 'information_ratio': -0.3,
-            'hit_rate': 0.45,
+            'hit_rate': 0.45, 'stable_days': 1,
             'param_selection_rate': {
                 '{"fast": 10, "slow": 40}': 0.8,
                 '{"fast": 20, "slow": 80}': 0.2,
@@ -289,6 +289,29 @@ class TestBacktestOutput:
         assert 'PAPER TRADING' in out
         assert 'Config Selection Rate' in out
         assert 'Paper Total Return' in out
+        # stable_days=1 → no stability filter row rendered
+        assert 'Stability Filter' not in out
+
+    def test_paper_trade_render_with_stability_filter(self, capsys):
+        state = {
+            'start': '2023-01-01', 'end': '2023-12-31', 'n_days': 200,
+            'ensemble': 'best', 'current_params': {'fast': 20, 'slow': 80},
+            'paper_total_return': 0.05, 'paper_annual_return': 0.04,
+            'paper_sharpe': 0.9, 'baseline_total_return': 0.10,
+            'baseline_annual_return': 0.09, 'alpha': 0.01,
+            'active_return': -0.005, 'information_ratio': -0.3,
+            'hit_rate': 0.45, 'stable_days': 5, 'n_switches': 3,
+            'mean_days_in_force': 40.0,
+            'days_in_force': {'{"fast": 10, "slow": 40}': 120,
+                              '{"fast": 20, "slow": 80}': 80},
+            'param_selection_rate': {},
+        }
+        format_paper_trade_results(state, None, 'AAPL', 'sma_cross')
+        out = capsys.readouterr().out
+        assert 'switch after 5 winning days' in out
+        assert 'Param Switches' in out
+        assert 'Mean Days In Force' in out
+        assert 'Config Time in Force' in out
 
     def test_paper_trade_render_detects_param_change(self, capsys):
         state = {

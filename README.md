@@ -98,7 +98,12 @@ actual position size:
 - `fixed` (default) — signal unchanged, or scaled by `weight`.
 - `target_vol` — scale exposure so rolling realized volatility times exposure
   approximates `--sizer-target` (annual), capped at `--max-leverage`. Cuts
-  exposure automatically in choppy markets.
+  exposure automatically in choppy markets. With `--slow-vol-window N`
+  (default 0 = disabled), position is scaled by the slow realized vol instead
+  (Moreira-Muir style vol management) so entries do not chase last week's
+  vol; the fast `--sizer-window` is retained as an upper bound, so a sudden
+  vol spike still cuts exposure immediately (crash guard). `--slow-vol-window`
+  must be >= `--sizer-window`.
 - `kelly` — fractional Kelly (`--kelly-fraction`, default a conservative 0.25)
   computed from the trailing win-rate and average win/loss. Only scales risk
   down; it never increases it.
@@ -151,6 +156,15 @@ report shows the paper equity vs buy-and-hold, alpha / hit rate / information
 ratio, which configs kept winning, and whether the current parameters changed
 since the last run. Run it repeatedly as new bars arrive to extend the paper
 history. It is a *monitoring* harness — it does not place orders.
+
+`--stable-days N` (default 1) adds a hysteresis filter: the active config in
+`--ensemble best` mode only switches after the new favorite has led for N
+consecutive days, instead of switching every bar. This trades a little
+responsiveness for far less parameter flapping (the day-to-day argmax is
+noisy). Blending ensembles (equal/rank/topk) ignore the filter for returns
+but still track the would-be active config for turnover diagnostics. The
+report shows param switch count, mean days in force, and per-config time in
+force tables so you can see exactly how stable the selection is.
 
 #### Custom strategies
 
@@ -286,6 +300,7 @@ Period high: $332.12   Period low: $218.77
 | `--sizer NAME`              | Position sizing: `fixed`, `target_vol`, `kelly` (default `fixed`) |
 | `--sizer-target RATE`       | Annual vol target for `target_vol` (default `0.15`) |
 | `--sizer-window N`          | Rolling window (days) for sizing (default `20`) |
+| `--slow-vol-window N`       | Slow-vol window for vol-managed `target_vol` (default `0` = off) |
 | `--max-leverage N`          | Max gross exposure for `target_vol` (default `1.0`) |
 | `--kelly-fraction N`        | Fraction of full Kelly for the `kelly` sizer (default `0.25`) |
 | `--walk-forward`            | Out-of-sample walk-forward validation of the strategy's parameters |
@@ -295,6 +310,7 @@ Period high: $332.12   Period low: $218.77
 | `--ensemble NAME`           | OOS combination: `best`, `equal`, `rank`, `topk` (default `best`) |
 | `--topk N`                  | Top-k count for `--ensemble topk` (default: half the grid, min 2) |
 | `--paper-trade TICKER`      | Paper-trade a strategy day by day with walk-forward-selected params |
+| `--stable-days N`          | Paper trading: winning days required before the active config switches (default `1`)
 | `--portfolio T1 T2 ...` | Portfolio mode: optimize a basket (min 2) |
 | `--cov-method NAME`         | Covariance estimator: `sample`, `lw` (default), `factor` (PCA risk model) |
 | `--ff`              | Fama-French overlay: factor exposures, risk premia, and a factor prior for `--bl` |
@@ -354,7 +370,7 @@ Risk Score              MODERATE
 - **Simulation & statistics**: Monte Carlo 1y forecast, Sharpe bootstrap CI, Jobson–Korkie Sharpe significance, Ljung-Box autocorrelation, Jarque-Bera normality, ADF stationarity, worst 30-day return
 - **Benchmark-adjusted**: backtest alpha, beta-to-baseline, active return, information ratio, daily hit rate vs buy-and-hold
 - **Portfolio**: min-variance / tangency / efficient / Black-Litterman weights, Ledoit-Wolf shrinkage + PCA-factor covariance, correlation matrix, frontier sketch, scenario stress tests
-- **Backtesting extras**: position sizing (target-vol, fractional Kelly), walk-forward out-of-sample validation with a parameter grid, ensemble OOS combinations (equal/rank/topk), Fama-French overlay, day-by-day paper trading
+- **Backtesting extras**: position sizing (target-vol with optional vol-management, fractional Kelly), walk-forward out-of-sample validation with a parameter grid, ensemble OOS combinations (equal/rank/topk), Fama-French overlay, day-by-day paper trading with a stability filter
 
 See `quant_finance/metrics.py`, `quant_finance/statistics.py`,
 `quant_finance/backtest.py`, and `quant_finance/portfolio.py` for the exact

@@ -93,6 +93,64 @@ class TestPaperTrade:
             assert full_by_day[day] == pytest.approx(short_by_day[day], abs=1e-12)
 
 
+class TestStabilityFilter:
+    def _run_stable(self, stable_days=1, seed=5, **kw):
+        return _run(seed=seed, **kw) if stable_days == 1 else paper_trade(
+            _prices(seed=seed), BUILTIN_STRATEGIES['sma_cross'],
+            parse_param_grid("fast=10,20;slow=40,60"),
+            train_frac=0.6, ensemble='best', stable_days=stable_days)
+
+    def test_default_stable_days_1_has_all_keys(self):
+        state = _run()
+        for key in ('stable_days', 'n_switches', 'mean_days_in_force', 'days_in_force'):
+            assert key in state
+        assert state['stable_days'] == 1
+
+    def test_big_stable_days_prevents_switching(self):
+        state = self._run_stable(stable_days=999)
+        assert state['n_switches'] == 0
+        assert len(state['days_in_force']) == 1
+        assert sum(state['days_in_force'].values()) == state['n_days']
+
+    def test_big_stable_days_vs_single_config(self):
+        """With stable_days >= n_days, only the initial argmax ever trades."""
+        state = self._run_stable(stable_days=999)
+        active_key = list(state['days_in_force'].keys())[0]
+        params = json.loads(active_key)
+        single = paper_trade(_prices(), BUILTIN_STRATEGIES['sma_cross'],
+                             [params], train_frac=0.6, ensemble='best')
+        assert state['paper_total_return'] == pytest.approx(single['paper_total_return'], abs=1e-9)
+
+    def test_stable_days_reduces_or_equals_switches(self):
+        loose = self._run_stable(stable_days=1, seed=8)
+        tight = self._run_stable(stable_days=5, seed=8)
+        assert tight['n_switches'] <= loose['n_switches']
+
+    def test_in_force_days_sum_to_n_days(self):
+        state = self._run_stable(stable_days=3)
+        assert sum(state['days_in_force'].values()) == state['n_days']
+
+    def test_selection_rate_still_sums_to_one(self):
+        state = self._run_stable(stable_days=3)
+        assert sum(state['param_selection_rate'].values()) == pytest.approx(1.0)
+
+    def test_invalid_stable_days_raises(self):
+        for bad in (0, -1, 'x'):
+            with pytest.raises(ValueError):
+                paper_trade(_prices(), BUILTIN_STRATEGIES['sma_cross'],
+                            [{'fast': 10, 'slow': 40}], stable_days=bad)
+
+    def test_blending_ensemble_ignores_stable_for_returns(self):
+        """Ensembles blend daily returns; stable_days is a reporting-only filter."""
+        prices = _prices(seed=12)
+        grid = parse_param_grid("fast=10,20;slow=40,60")
+        rank = paper_trade(prices, BUILTIN_STRATEGIES['sma_cross'], grid,
+                           train_frac=0.6, ensemble='rank', stable_days=5)
+        rank_raw = paper_trade(prices, BUILTIN_STRATEGIES['sma_cross'], grid,
+                               train_frac=0.6, ensemble='rank')
+        assert rank['paper_total_return'] == pytest.approx(rank_raw['paper_total_return'], abs=1e-9)
+
+
 class TestPaperStateFile:
     def test_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setenv('QFCLI_PAPER_DIR', str(tmp_path))
@@ -102,6 +160,7 @@ class TestPaperStateFile:
         back = load_paper_state(path)
         assert back['n_days'] == state['n_days']
         assert back['current_params'] == state['current_params']
+        assert back['stable_days'] == 1
         assert json.dumps(back)  # JSON-serializable
 
     def test_missing_state_returns_none(self, tmp_path, monkeypatch):

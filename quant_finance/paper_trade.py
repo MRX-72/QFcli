@@ -62,6 +62,7 @@ def paper_trade(
     train_frac: float = DEFAULT_TRAIN_FRAC,
     ensemble: str = 'best',
     topk: Optional[int] = None,
+    stable_days: int = 1,
     selection_metric: str = 'sharpe'
 ) -> Dict:
     """
@@ -76,9 +77,19 @@ def paper_trade(
            with those weights and recorded as the paper day return.
         4. The buy-and-hold return of the asset for the same day is recorded.
 
+    ``stable_days`` adds a hysteresis filter: the single config in force for
+    ``ensemble='best'`` only switches after the new favorite has led for that
+    many consecutive days, instead of trading last bar's winner every morning.
+    This trades away a little responsiveness for far less parameter flapping
+    (the day-to-day argmax is noisy). Blending ensembles (equal/rank/topk)
+    ignore the filter for returns - they already diversify - but the would-be
+    active config is still tracked for turnover diagnostics.
+
     The persisted state also flags how often each config was the day's argmax
-    (``param_selection_rate``) so the harness is honest about which parameters
-    kept winning.
+    (``param_selection_rate``), how often the *active* config changed
+    (``n_switches``) and how long it stayed in force (``mean_days_in_force``),
+    so the harness is honest about which parameters kept winning and how
+    frequently it churned.
 
     Args:
         prices: Daily close price series
@@ -89,6 +100,8 @@ def paper_trade(
         train_frac: Initial fraction of history treated as in-sample
         ensemble: 'best', 'equal', 'rank' or 'topk' (see walk_forward)
         topk: k used by 'topk'
+        stable_days: Consecutive winning days required before switching the
+            active config (best mode; default 1 = switch every day)
         selection_metric: Metric maximized on the training window
 
     Returns:
@@ -97,6 +110,12 @@ def paper_trade(
     if ensemble not in _ENSEMBLE_CHOICES:
         raise ValueError(f"Unknown ensemble '{ensemble}' "
                          f"(choose {', '.join(_ENSEMBLE_CHOICES)}).")
+    try:
+        stable_days = int(stable_days)
+    except (TypeError, ValueError):
+        raise ValueError("stable_days must be a positive integer.")
+    if stable_days < 1:
+        raise ValueError("stable_days must be >= 1.")
     clean = prices.dropna()
     n = len(clean)
     oos_start = int(n * train_frac)
@@ -114,7 +133,13 @@ def paper_trade(
     baseline_days: List[float] = []
     days_index: List[object] = []
     selection: Dict[str, int] = {}
+    days_in_force: Dict[str, int] = {}
     current_params = None
+    active_key = None
+    prev_active = None
+    prev_cand = None
+    streak = 0
+    n_switches = 0
 
     for t in range(oos_start, n):
         train = clean.iloc[:t]      # data available before day t's bar
@@ -136,8 +161,28 @@ def paper_trade(
         ordered = [scores[k][1] for k in scores]
         weights = _ensemble_weights(ordered, ensemble, topk)
 
-        best_key = max(scores, key=lambda k: scores[k][1])
-        selection[best_key] = selection.get(best_key, 0) + 1
+        cand_key = max(scores, key=lambda k: scores[k][1])
+        selection[cand_key] = selection.get(cand_key, 0) + 1
+
+        # hysteresis: switch the active config only after the candidate has
+        # led for stable_days consecutive days (or on the very first day)
+        if cand_key == prev_cand:
+            streak += 1
+        else:
+            streak = 1
+        prev_cand = cand_key
+        if active_key is None or streak >= stable_days:
+            active_key = cand_key
+        days_in_force[active_key] = days_in_force.get(active_key, 0) + 1
+        if prev_active is not None and active_key != prev_active:
+            n_switches += 1
+        prev_active = active_key
+
+        # in single-config mode the stability filter determines the trade;
+        # blending ensembles already diversify and trade unchanged weights
+        if ensemble == 'best' and stable_days > 1:
+            weights = np.zeros(len(ordered))
+            weights[list(scores.keys()).index(active_key)] = 1.0
 
         # day t net return = position decided on data through t-1 (shift(1))
         day_net = 0.0
@@ -184,6 +229,9 @@ def paper_trade(
 
     total_sel = sum(selection.values()) or 1
     selection_rate = {k: v / total_sel for k, v in sorted(selection.items())}
+    in_force = {k: v for k, v in sorted(days_in_force.items())}
+    mean_days_in_force = (sum(days_in_force.values()) / (n_switches + 1)
+                          if days_in_force else 0.0)
 
     tail = min(len(paper), OOS_TAIL)
     daily_tail = [
@@ -215,6 +263,10 @@ def paper_trade(
         'hit_rate': active['hit_rate'],
         'current_params': current_params,
         'param_selection_rate': selection_rate,
+        'stable_days': stable_days,
+        'n_switches': int(n_switches),
+        'mean_days_in_force': float(mean_days_in_force),
+        'days_in_force': in_force,
         'daily_tail': daily_tail,
         'updated_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
     }

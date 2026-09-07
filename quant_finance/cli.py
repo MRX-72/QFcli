@@ -84,7 +84,8 @@ Examples:
   qfcli --backtest AAPL -s sma_cross --sizer target_vol  # Vol-target position sizing
   qfcli --backtest AAPL --walk-forward --grid "fast=10,20;slow=40,80"  # OOS validation
   qfcli --backtest AAPL --walk-forward --ensemble rank --grid "fast=10;slow=40,80"  # robust blend
-  qfcli --paper-trade AAPL -s sma_cross --grid "fast=10;slow=40"       # paper monitoring harness
+  qfcli --backtest AAPL -s target_vol --slow-vol-window 126 --sizer-target 0.15  # vol-managed sizing
+  qfcli --paper-trade AAPL -s sma_cross --grid "fast=10,20;slow=40,60" --stable-days 5  # stable params
   qfcli --portfolio AAPL MSFT NVDA KO --period 2y # Portfolio mode
   qfcli --portfolio AAPL MSFT --bl --view NVDA=0.18 # Black-Litterman with a view
   qfcli --portfolio AAPL MSFT NVDA --cov-method factor --ff  # PCA risk model + Fama-French overlay
@@ -184,6 +185,15 @@ Examples:
     )
 
     parser.add_argument(
+        '--slow-vol-window',
+        type=int,
+        default=0,
+        help='Slow realized-vol window for vol-managed target_vol sizing '
+             '(default: 0 = disabled). Position is scaled by slow vol '
+             '(Moreira-Muir) and the fast target caps exposure on vol spikes.'
+    )
+
+    parser.add_argument(
         '--max-leverage',
         type=float,
         default=1.0,
@@ -240,6 +250,14 @@ Examples:
         type=int,
         default=None,
         help='Number of top configs averaged by --ensemble topk (default: half the grid, min 2)'
+    )
+
+    parser.add_argument(
+        '--stable-days',
+        type=int,
+        default=1,
+        help='Paper trading: consecutive winning days required before the '
+             'active config switches (hysteresis; default 1 = switch every day)'
     )
 
     parser.add_argument(
@@ -430,6 +448,8 @@ def main() -> int:
             if args.sizer == 'target_vol':
                 sizer_kwargs = {'target_vol': args.sizer_target, 'window': args.sizer_window,
                                 'max_leverage': args.max_leverage}
+                if args.slow_vol_window:
+                    sizer_kwargs['slow_window'] = args.slow_vol_window
             elif args.sizer == 'kelly':
                 sizer_kwargs = {'fraction': args.kelly_fraction, 'window': args.sizer_window}
             else:
@@ -465,7 +485,7 @@ def main() -> int:
                     cost_bps=args.cost, slippage_bps=args.slippage,
                     risk_free_rate=args.risk_free_rate,
                     train_frac=args.train_frac, ensemble=args.ensemble,
-                    topk=args.topk,
+                    topk=args.topk, stable_days=args.stable_days,
                 )
                 state['strategy'] = strategy_label
                 state['ticker'] = ticker.upper()

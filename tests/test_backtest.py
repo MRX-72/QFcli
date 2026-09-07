@@ -166,6 +166,88 @@ class TestPositionSizing:
                            {'target_vol': 0.50, 'window': 20, 'max_leverage': 0.8})
         assert float(tv.max()) <= 0.8 + 1e-12
 
+    def _spiked_returns(self, seed=4, days=260):
+        rng = np.random.default_rng(seed)
+        idx = pd.date_range("2022-01-01", periods=days, freq="B")
+        ret = rng.normal(0.0004, 0.008, days)
+        # a single violent spike halfway through
+        ret[days // 2] = 0.25
+        returns = pd.Series(ret, index=idx)
+        signal = pd.Series(1.0, index=idx)
+        return signal, returns
+
+    def test_target_vol_slow_window_is_smoother_than_fast(self):
+        signal, returns = self._spiked_returns()
+        fast = size_position(signal, returns, 'target_vol',
+                             {'target_vol': 0.15, 'window': 20, 'max_leverage': 1.0})
+        slow = size_position(signal, returns, 'target_vol',
+                             {'target_vol': 0.15, 'window': 20,
+                              'slow_window': 120, 'max_leverage': 1.0})
+        # vol-management scales by slow realized vol: far fewer exposure jumps
+        change_fast = fast.diff().abs().mean()
+        change_slow = slow.diff().abs().mean()
+        assert change_slow < change_fast
+
+    def test_target_vol_slow_window_never_exceeds_fast_exposure(self):
+        signal, returns = self._spiked_returns()
+        tv = size_position(signal, returns, 'target_vol',
+                           {'target_vol': 0.15, 'window': 20, 'max_leverage': 1.0})
+        vm = size_position(signal, returns, 'target_vol',
+                           {'target_vol': 0.15, 'window': 20,
+                            'slow_window': 120, 'max_leverage': 1.0})
+        # the fast target is an upper bound (crash guard) on the slow scaling
+        assert (vm <= tv + 1e-9).all()
+
+    def test_target_vol_slow_window_crash_guard_cuts_immediately(self):
+        signal, returns = self._spiked_returns(seed=4)
+        fast = size_position(signal, returns, 'target_vol',
+                             {'target_vol': 0.15, 'window': 20, 'max_leverage': 1.0})
+        slow = size_position(signal, returns, 'target_vol',
+                             {'target_vol': 0.15, 'window': 20,
+                              'slow_window': 120, 'max_leverage': 1.0})
+        spike = returns.index[returns > 0.2][0]
+        pos = returns.index.get_loc(spike)
+        # on and right after the spike the guard forces the slow signal down to
+        # the fast vol-target cut, so exposure matches fast-only exactly
+        for j in range(pos, min(pos + 15, len(returns))):
+            assert slow.iloc[j] == pytest.approx(fast.iloc[j], abs=1e-9)
+
+    def test_target_vol_slow_window_memory_depresses_after_fast_recovers(self):
+        signal, returns = self._spiked_returns(seed=4)
+        fast = size_position(signal, returns, 'target_vol',
+                             {'target_vol': 0.15, 'window': 20, 'max_leverage': 1.0})
+        slow = size_position(signal, returns, 'target_vol',
+                             {'target_vol': 0.15, 'window': 20,
+                              'slow_window': 120, 'max_leverage': 1.0})
+        spike = returns.index[returns > 0.2][0]
+        pos = returns.index.get_loc(spike)
+        # once the spike has left the 20d window, the 120d slow vol still
+        # remembers it: exposure stays depressed while fast-only has recovered
+        j = pos + 30
+        assert float(slow.iloc[j]) < float(fast.iloc[j])
+
+    def test_target_vol_slow_window_respects_max_leverage(self):
+        signal, returns = self._spiked_returns()
+        vm = size_position(signal, returns, 'target_vol',
+                           {'target_vol': 0.60, 'window': 20,
+                            'slow_window': 120, 'max_leverage': 0.8})
+        assert float(vm.max()) <= 0.8 + 1e-12
+
+    def test_target_vol_slow_window_requires_window_le_slow(self):
+        signal, returns = self._data()
+        with pytest.raises(ValueError, match='slow_window'):
+            size_position(signal, returns, 'target_vol',
+                          {'target_vol': 0.15, 'window': 60, 'slow_window': 20})
+
+    def test_run_backtest_slow_window_size(self):
+        prices = _trend(seed=9)
+        res = run_backtest(prices, BUILTIN_STRATEGIES['sma_cross'],
+                           sizer='target_vol',
+                           sizer_kwargs={'target_vol': 0.15, 'window': 20,
+                                         'slow_window': 126, 'max_leverage': 1.0})
+        assert res['n_days'] > 0
+        assert 'strategy_total_return' in res
+
     def test_kelly_bounded_and_nonnegative(self):
         signal, returns = self._data(seed=13)
         k = size_position(signal, returns, 'kelly', {'fraction': 0.25, 'window': 126})

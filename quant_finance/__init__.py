@@ -3,7 +3,7 @@ Quant Finance Module
 A quantitative finance toolkit for stock analysis.
 """
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 __author__ = "MRX-72"
 
 from .data_fetcher import fetch_stock_data, calculate_daily_returns, fetch_benchmark_returns
