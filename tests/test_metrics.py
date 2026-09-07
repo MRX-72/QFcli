@@ -15,7 +15,8 @@ from quant_finance.metrics import (
     sortino_ratio,
     value_at_risk,
     beta,
-    yearly_returns
+    yearly_returns,
+    active_performance
 )
 
 
@@ -220,3 +221,54 @@ class TestYearlyReturns:
 
     def test_empty_returns_empty_dict(self):
         assert yearly_returns(pd.Series([], dtype=float)) == {}
+
+class TestActivePerformance:
+    def _noisy(self, level, seed=0):
+        rng = np.random.default_rng(seed)
+        return pd.Series(rng.normal(level, 0.005, 300))
+
+    def test_all_keys_present(self):
+        out = active_performance(self._noisy(0.001), self._noisy(0.0005))
+        for key in ('alpha', 'beta_to_baseline', 'active_return',
+                    'information_ratio', 'hit_rate'):
+            assert key in out
+
+    def test_hit_rate_one_when_always_better(self):
+        strat = pd.Series(np.full(200, 0.01))
+        base = pd.Series(np.full(200, 0.005))
+        out = active_performance(strat, base)
+        assert out['hit_rate'] == pytest.approx(1.0)
+
+    def test_hit_rate_zero_when_identical_to_baseline(self):
+        strat = pd.Series(np.full(200, 0.01))
+        out = active_performance(strat, strat)
+        assert out['hit_rate'] == pytest.approx(0.0)
+        assert out['active_return'] == pytest.approx(0.0, abs=1e-12)
+
+    def test_alpha_positive_for_beat_every_day(self):
+        strat = self._noisy(0.002)
+        base = self._noisy(0.0005, seed=5)
+        out = active_performance(strat, base)
+        assert out['alpha'] > 0
+        assert out['hit_rate'] > 0.5
+
+    def test_beta_consistent_with_regression(self):
+        rng = np.random.default_rng(7)
+        base = pd.Series(rng.normal(0.0005, 0.01, 400))
+        strat = pd.Series(0.0001 + 1.3 * base.values + rng.normal(0, 0.002, 400))
+        out = active_performance(strat, base)
+        assert out['beta_to_baseline'] == pytest.approx(1.3, rel=0.05)
+        assert out['alpha'] == pytest.approx(0.0001 * 252, abs=0.06)
+
+    def test_constant_returns_zero_variance_guard(self):
+        # constant baseline returns -> degenerate regression handled cleanly
+        out = active_performance(pd.Series([0.01] * 100), pd.Series([0.01] * 100))
+        assert np.isnan(out['beta_to_baseline'])
+        assert out['alpha'] == pytest.approx(0.01 * 252)
+
+    def test_insufficient_overlap_returns_nan(self):
+        idx = pd.date_range("2025-01-01", periods=100, freq="B")
+        a = pd.Series(np.zeros(100), index=idx)
+        b = pd.Series(np.zeros(100), index=idx + pd.Timedelta(days=250))
+        out = active_performance(a, b)
+        assert np.isnan(out['alpha']) and np.isnan(out['hit_rate'])

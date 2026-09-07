@@ -12,6 +12,11 @@ from quant_finance.portfolio import (
     portfolio_stats,
     efficient_frontier,
     correlation_matrix,
+    covariance_estimator,
+    shrinkage_covariance,
+    implied_returns,
+    black_litterman,
+    black_litterman_weights,
     stress_test,
     build_portfolio_report,
 )
@@ -93,6 +98,130 @@ class TestCorrelation:
     def test_symmetric(self):
         corr = correlation_matrix(_returns())
         assert np.allclose(corr.values, corr.values.T)
+
+
+class TestShrinkageCovariance:
+    def _near_collinear(self, n=200, seed=0):
+        rng = np.random.default_rng(seed)
+        true = np.array([[1.0, 0.99, 0.3],
+                         [0.99, 1.02, 0.31],
+                         [0.3, 0.31, 0.6]])
+        chol = np.linalg.cholesky(true)
+        X = rng.normal(size=(n, 3)) @ chol.T
+        return pd.DataFrame(X, columns=['A', 'B', 'C'])
+
+    def test_matches_sample_for_identical_assets_scale(self):
+        rng = np.random.default_rng(1)
+        r = rng.normal(0.001, 0.02, 300)
+        df = pd.DataFrame({'X': r, 'Y': r * 2})
+        lw = shrinkage_covariance(df)
+        # identical scaling: shrunk diag ~ sample diag (scaled by factor 4)
+        assert lw.loc['Y', 'Y'] == pytest.approx(4 * lw.loc['X', 'X'], rel=0.1)
+
+    def test_defines_identity_of_single_asset(self):
+        df = _returns().iloc[:, [0]]
+        lw = shrinkage_covariance(df)
+        assert lw.loc['A', 'A'] == pytest.approx(df['A'].cov(df['A']), rel=1e-6)
+
+    def test_improves_conditioning_when_near_collinear(self):
+        df = self._near_collinear()
+        sample = covariance_estimator(df, method='sample').values
+        shrunk = shrinkage_covariance(df).values
+        assert np.linalg.cond(shrunk) < np.linalg.cond(sample)
+
+    def test_positive_semidefinite(self):
+        df = self._near_collinear()
+        eig = np.linalg.eigvalsh(shrinkage_covariance(df).values)
+        assert eig.min() > -1e-10
+
+    def test_shrinks_less_with_more_data(self):
+        # deviation from the sample covariance grows with the shrinkage
+        # intensity; more data should shrink less
+        def _deviation(n):
+            df = self._near_collinear(n=n, seed=3)
+            sample = covariance_estimator(df, method='sample').values
+            shrunk = shrinkage_covariance(df).values
+            return float(np.linalg.norm(shrunk - sample))
+        assert _deviation(120) > _deviation(1200)
+
+    def test_beats_sample_when_target_is_close_to_truth(self):
+        # near-diagonal truth: the constant-correlation target is close, so
+        # shrinkage wins on average over seeds
+        true = np.diag([1.0, 1.5, 0.8])
+        err_sample, err_shrunk = [], []
+        for seed in range(10):
+            rng = np.random.default_rng(seed)
+            X = rng.normal(size=(250, 3)) @ np.linalg.cholesky(true).T
+            df = pd.DataFrame(X, columns=['A', 'B', 'C'])
+            err_sample.append(np.linalg.norm(covariance_estimator(df, 'sample').values - true))
+            err_shrunk.append(np.linalg.norm(shrinkage_covariance(df).values - true))
+        assert np.mean(err_shrunk) < np.mean(err_sample)
+
+    def test_lw_default_used_by_min_variance(self):
+        w = min_variance(_returns(seed=2))
+        assert w.sum() == pytest.approx(1.0, abs=1e-9)
+
+
+class TestImpliedReturns:
+    def test_monotonic_in_risk_aversion(self):
+        cov = pd.DataFrame([[0.04, 0.01], [0.01, 0.09]], index=['A', 'B'], columns=['A', 'B'])
+        w = pd.Series({'A': 0.6, 'B': 0.4})
+        low = implied_returns(cov, w, risk_aversion=1.0)
+        high = implied_returns(cov, w, risk_aversion=3.0)
+        assert (high > low).all()
+
+    def test_known_value(self):
+        cov = pd.DataFrame([[0.04, 0.01], [0.01, 0.09]], index=['A', 'B'], columns=['A', 'B'])
+        w = pd.Series({'A': 0.5, 'B': 0.5})
+        pi = implied_returns(cov, w, risk_aversion=2.0)
+        expected = 2.0 * np.array([0.04 * 0.5 + 0.01 * 0.5, 0.01 * 0.5 + 0.09 * 0.5])
+        assert np.allclose(pi.values, expected)
+
+
+class TestBlackLitterman:
+    def _df(self, n=500, seed=0):
+        rng = np.random.default_rng(seed)
+        idx = pd.date_range("2023-01-01", periods=n, freq="B")
+        return pd.DataFrame(0.0004 + rng.normal(0, 0.01, size=(n, 3)),
+                            columns=['A', 'B', 'C'], index=idx)
+
+    def test_no_views_returns_reference_weights(self):
+        bl = black_litterman(self._df())
+        w = bl['weights']
+        assert w.sum() == pytest.approx(1.0, abs=1e-9)
+        # equal-weight prior reproduces ~equal weights under the model
+        for asset in ('A', 'B', 'C'):
+            assert w[asset] == pytest.approx(1 / 3, abs=0.05)
+
+    def test_view_tilts_weights_monotonically(self):
+        df = self._df(seed=3)
+        base = black_litterman(df)['weights']['A']
+        weights = []
+        for v in (0.02, 0.08, 0.20):
+            weights.append(black_litterman(df, views={'A': v})['weights']['A'])
+        assert weights[0] < weights[1] < weights[2]
+        assert weights[2] > base
+
+    def test_view_pulls_posterior_toward_view(self):
+        df = self._df(seed=9)
+        bl_no = black_litterman(df)
+        bl_with = black_litterman(df, views={'A': 0.06}, view_confidence=1e-4)
+        assert bl_with['posterior_returns']['A'] > bl_no['implied_returns']['A']
+        assert bl_with['posterior_returns']['A'] > 0.05   # close to the view
+
+    def test_layout_keys(self):
+        bl = black_litterman(self._df())
+        for key in ('weights', 'implied_returns', 'posterior_returns',
+                    'prior_weights', 'cov'):
+            assert key in bl
+
+    def test_unknown_view_asset_raises(self):
+        with pytest.raises(ValueError):
+            black_litterman(self._df(), views={'ZZZ': 0.1})
+
+    def test_black_litterman_weight_helper(self):
+        w = black_litterman_weights(self._df())
+        assert w.sum() == pytest.approx(1.0, abs=1e-9)
 
 
 class TestStress:

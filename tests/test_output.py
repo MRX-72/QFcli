@@ -12,6 +12,8 @@ from quant_finance.output import (
     sparkline_levels,
     gauge_bar,
     create_correlation_table,
+    format_backtest_results,
+    format_walk_forward_results,
 )
 
 import pandas as pd
@@ -186,3 +188,60 @@ class TestFormatting:
 
     def test_format_nan(self):
         assert format_percentage(np.nan).plain == "N/A"
+
+
+class TestBacktestOutput:
+    def _result(self):
+        return {
+            'strategy_total_return': 0.10, 'strategy_annual_return': 0.08,
+            'strategy_volatility': 0.20, 'strategy_sharpe': 1.1,
+            'strategy_sortino': 1.4, 'strategy_max_drawdown': -0.12,
+            'strategy_win_ratio': 0.55, 'strategy_best_day': 0.03,
+            'strategy_worst_day': -0.04,
+            'baseline_total_return': 0.15, 'baseline_annual_return': 0.12,
+            'baseline_volatility': 0.18, 'baseline_sharpe': 1.4,
+            'baseline_sortino': 1.6, 'baseline_max_drawdown': -0.10,
+            'baseline_win_ratio': 0.6, 'baseline_best_day': 0.02,
+            'baseline_worst_day': -0.03,
+            'n_days': 252, 'n_trades': 8, 'total_cost': 0.001,
+            'avg_daily_turnover': 0.01, 'days_in_market': 0.7,
+            'strategy_alpha': 0.03, 'strategy_beta_to_baseline': 0.9,
+            'strategy_active_return': 0.02, 'strategy_information_ratio': 0.4,
+            'strategy_hit_rate': 0.51,
+        }
+
+    def test_backtest_render_includes_active_section(self, capsys):
+        format_backtest_results(self._result(), 'AAPL', 'sma_cross')
+        out = capsys.readouterr().out
+        assert 'vs Buy & Hold' in out
+        assert 'Hit Rate' in out
+
+    def test_backtest_render_handles_nan_active(self, capsys):
+        res = self._result()
+        res['strategy_alpha'] = float('nan')
+        res['strategy_information_ratio'] = float('nan')
+        format_backtest_results(res, 'AAPL', 'sma_cross')  # must not raise
+        assert 'N/A' in capsys.readouterr().out
+
+    def test_walk_forward_render(self, capsys):
+        wf = {
+            'oos_total_return': 0.05, 'oos_annual_return': 0.04,
+            'oos_sharpe': 0.8, 'baseline_total_return': 0.09,
+            'baseline_annual_return': 0.07, 'alpha': 0.01,
+            'beta_to_baseline': 0.6, 'active_return': 0.005,
+            'information_ratio': 0.3, 'hit_rate': 0.5,
+            'oos_days': 150, 'n_folds': 3, 'fold_beat_rate': 1 / 3,
+            'selection_metric': 'sharpe',
+            'folds': [
+                {'test_start': 0, 'test_end': 50, 'best_params': {'fast': 10, 'slow': 40},
+                 'oos_strategy_total_return': 0.02, 'oos_baseline_total_return': 0.03,
+                 'beat_baseline': False, 'oos_n_days': 50},
+                {'test_start': 50, 'test_end': 100, 'best_params': {'fast': 20},
+                 'oos_strategy_total_return': 0.04, 'oos_baseline_total_return': 0.02,
+                 'beat_baseline': True, 'oos_n_days': 50},
+            ],
+        }
+        format_walk_forward_results(wf, 'AAPL', 'sma_cross')
+        out = capsys.readouterr().out
+        assert 'WALK-FORWARD' in out
+        assert 'Per-Fold Detail' in out

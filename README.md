@@ -70,6 +70,7 @@ qfcli --backtest NVDA -s sma_cross --cost 5 --slippage 5
 qfcli --backtest AAPL -s momentum --lookback 20 --hold 15
 qfcli --backtest MSFT -s rsi_reversion --json
 qfcli --backtest AAPL --strategy-file my_strat.py --strategy-param threshold=0.02
+qfcli --backtest NVDA -s sma_cross --sizer target_vol --sizer-target 0.15
 ```
 
 Strategies (`-s/--strategy`):
@@ -82,7 +83,45 @@ Strategies (`-s/--strategy`):
 
 Signals are shifted one day forward (no lookahead). A transaction cost and
 slippage model (`--cost`/`--slippage`, basis points) is charged against traded
-turnover. Every run reports the same metrics for the buy-and-hold baseline.
+turnover. Every run reports the same metrics for the buy-and-hold baseline,
+plus a **vs Buy & Hold** panel that keeps performance claims honest: annualized
+**alpha**, **beta** to the baseline, **active return**, **information ratio**
+and the daily **hit rate** (share of days the strategy actually beats just
+holding the asset). A consistent negative spread of these numbers says the
+strategy is not adding value over buy-and-hold, and it should be read that way.
+
+#### Position sizing
+
+`--sizer` scales the strategy signal (which only says *what* to hold) into an
+actual position size:
+
+- `fixed` (default) — signal unchanged, or scaled by `weight`.
+- `target_vol` — scale exposure so rolling realized volatility times exposure
+  approximates `--sizer-target` (annual), capped at `--max-leverage`. Cuts
+  exposure automatically in choppy markets.
+- `kelly` — fractional Kelly (`--kelly-fraction`, default a conservative 0.25)
+  computed from the trailing win-rate and average win/loss. Only scales risk
+  down; it never increases it.
+
+Sizing uses only past data (with a neutral 1.0 fallback during warm-up).
+
+#### Walk-forward validation
+
+A backtest on the full history can overfit: good-looking parameters tuned on
+the whole series prove nothing out of sample. `--walk-forward` splits the
+history into an in-sample segment and successive out-of-sample windows,
+re-selects the best grid point on each growing training window, then runs it
+untouched on the following test window:
+
+```bash
+qfcli --backtest AAPL -s sma_cross --walk-forward \
+      --grid "fast=10,20,40;slow=60,80,100"
+```
+
+`--grid` is a cartesian product of `key=value1,value2` clauses. Out-of-sample
+daily returns are stitched into a single equity curve and evaluated against
+buy-and-hold (alpha, hit rate, information ratio, fold-by-fold detail). Note:
+parameters not listed in the grid keep the strategy's defaults.
 
 #### Custom strategies
 
@@ -118,15 +157,30 @@ strategies you trust.
 ```bash
 qfcli --portfolio AAPL MSFT NVDA KO --period 2y
 qfcli --portfolio AAPL MSFT --period 1y --json
+qfcli --portfolio AAPL MSFT NVDA --bl --view NVDA=0.18
 ```
 
-Given the historical daily returns, QFcli computes three weightings:
+Given the historical daily returns, QFcli computes three weightings plus (on
+request) a Black-Litterman allocation:
 
 - **Min variance** — the closed-form global minimum-variance portfolio
   `S⁻¹1/(1'S⁻¹1)`.
 - **Tangency** — the maximum-Sharpe portfolio from sample statistics.
 - **Efficient** — a long-only tangency-style allocation via an iterative
   optimizer (label: heuristic).
+- **Black-Litterman** (`--bl`) — reverse-optimized equilibrium returns from an
+  equal-weight reference portfolio, optionally blended with absolute `--view`
+  tilts (`TICKER=RATE`, e.g. `--view NVDA=0.18` means an 18% target excess
+  return for NVDA). Per-view error variance defaults to 0.0025
+  (`--view-confidence` to override); without views the posterior equals the
+  prior and reproduces the reference weights, so views are the only source of
+  tilt.
+
+Covariance estimation defaults to **Ledoit-Wolf style shrinkage** toward a
+constant-correlation target, which keeps the closed-form inverse well
+conditioned (the classic fix for short, correlated histories). Diagnostics are
+reported honestly: great-looking tangency weights with extreme short positions
+read as estimation noise, not opportunity.
 
 It also prints portfolio expected return/volatility/Sharpe, a correlation
 heatmap, an estimated efficient-frontier risk range (sampled using a seeded
@@ -185,7 +239,19 @@ Period high: $332.12   Period low: $218.77
 | `--lookback N` / `--hold N` | Windows for `momentum` (defaults `20`/`20`) |
 | `--strategy-file PATH`      | Load a custom strategy from a `.py` file (`custom_strategy(prices, **kwargs)`) |
 | `--strategy-param K=V`      | Pass a parameter to the strategy (repeatable) |
+| `--sizer NAME`              | Position sizing: `fixed`, `target_vol`, `kelly` (default `fixed`) |
+| `--sizer-target RATE`       | Annual vol target for `target_vol` (default `0.15`) |
+| `--sizer-window N`          | Rolling window (days) for sizing (default `20`) |
+| `--max-leverage N`          | Max gross exposure for `target_vol` (default `1.0`) |
+| `--kelly-fraction N`        | Fraction of full Kelly for the `kelly` sizer (default `0.25`) |
+| `--walk-forward`            | Out-of-sample walk-forward validation of the strategy's parameters |
+| `--grid SPEC`               | Param grid for `--walk-forward`, cartesian (`"fast=10,20;slow=40,80"`) |
+| `--train-frac N`            | Initial in-sample fraction for `--walk-forward` (default `0.6`) |
+| `--wf-step N`               | Days added per walk-forward fold (default `63`) |
 | `--portfolio T1 T2 ...` | Portfolio mode: optimize a basket (min 2) |
+| `--bl`              | Add a Black-Litterman weight row in portfolio mode (prior + optional views) |
+| `--view K=RATE`     | Absolute expected-return view for Black-Litterman, e.g. `NVDA=0.18` (repeatable) |
+| `--view-confidence N` | Per-view error variance for Black-Litterman (default `0.0025`) |
 | `--no-cache`          | Bypass the on-disk data cache |
 | `--json`              | Emit machine-readable JSON |
 
@@ -237,7 +303,9 @@ Risk Score              MODERATE
 - **Signals**: price-vs-moving-average bullish/bearish labels; risk bucket derived from annualized volatility (<15% stable, 15–30% moderate, >30% high)
 - **Calendar**: per-year return breakdown
 - **Simulation & statistics**: Monte Carlo 1y forecast, Sharpe bootstrap CI, Jobson–Korkie Sharpe significance, Ljung-Box autocorrelation, Jarque-Bera normality, ADF stationarity, worst 30-day return
-- **Portfolio**: min-variance / tangency / efficient weights, correlation matrix, frontier sketch, scenario stress tests
+- **Benchmark-adjusted**: backtest alpha, beta-to-baseline, active return, information ratio, daily hit rate vs buy-and-hold
+- **Portfolio**: min-variance / tangency / efficient / Black-Litterman weights, Ledoit-Wolf shrinkage covariance, correlation matrix, frontier sketch, scenario stress tests
+- **Backtesting extras**: position sizing (target-vol, fractional Kelly), walk-forward out-of-sample validation with a parameter grid
 
 See `quant_finance/metrics.py`, `quant_finance/statistics.py`,
 `quant_finance/backtest.py`, and `quant_finance/portfolio.py` for the exact
@@ -249,7 +317,8 @@ formulas and their documented assumptions.
   analysis; both single-stock and comparison modes share it.
 - The `--json` path round-trips `export_to_dict`, which converts non-finite
   floats to `null` so machine output is always valid JSON.
-- `pytest` covers the math layer (metrics, indicators), the comparison scoring,
+- `pytest` covers the math layer (metrics, indicators, shrinkage covariance,
+  Black-Litterman, position sizing, walk-forward), the comparison scoring,
   the backtester, portfolio closed forms, the statistics module, and the JSON
   export using synthetic, deterministic data — the test suite runs without
   network access.
@@ -266,8 +335,8 @@ quant_finance/
   indicators.py     SMA, EMA, RSI, MACD, Bollinger Bands
   metrics.py        return/risk math + rolling + Monte Carlo
   statistics.py     J-K Sharpe test, bootstrap, Ljung-Box, JB, ADF
-  backtest.py       vectorized strategy backtester
-  portfolio.py      min-variance/tangency/efficient + stress tests
+  backtest.py       vectorized backtester + position sizing + walk-forward
+  portfolio.py      min-variance/tangency/efficient/BL + shrinkage cov + stress
   output.py         rich tables + JSON export
 tests/              offline pytest suite
 main.py             entry shim (python main.py == qfcli)

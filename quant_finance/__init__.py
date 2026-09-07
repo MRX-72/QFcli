@@ -3,7 +3,7 @@ Quant Finance Module
 A quantitative finance toolkit for stock analysis.
 """
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __author__ = "MRX-72"
 
 from .data_fetcher import fetch_stock_data, calculate_daily_returns, fetch_benchmark_returns
@@ -22,7 +22,8 @@ from .metrics import (
     rolling_sharpe,
     monte_carlo_forecast,
     bootstrap_conf_interval,
-    worst_rolling_return
+    worst_rolling_return,
+    active_performance
 )
 from .indicators import (
     simple_moving_average,
@@ -40,6 +41,11 @@ from .portfolio import (
     efficient_portfolio,
     efficient_frontier,
     correlation_matrix,
+    covariance_estimator,
+    shrinkage_covariance,
+    implied_returns,
+    black_litterman,
+    black_litterman_weights,
     stress_test,
     build_portfolio_report
 )
@@ -50,7 +56,15 @@ from .statistics import (
     jarque_bera,
     adf_test
 )
-from .backtest import run_backtest, BUILTIN_STRATEGIES, load_custom_strategy, parse_strategy_params
+from .backtest import (
+    run_backtest,
+    BUILTIN_STRATEGIES,
+    load_custom_strategy,
+    parse_strategy_params,
+    size_position,
+    parse_param_grid,
+    walk_forward,
+)
 
 __all__ = [
     'fetch_stock_data',
@@ -71,6 +85,7 @@ __all__ = [
     'monte_carlo_forecast',
     'bootstrap_conf_interval',
     'worst_rolling_return',
+    'active_performance',
     'simple_moving_average',
     'moving_average_signals',
     'rate_of_change',
@@ -85,6 +100,11 @@ __all__ = [
     'efficient_portfolio',
     'efficient_frontier',
     'correlation_matrix',
+    'covariance_estimator',
+    'shrinkage_covariance',
+    'implied_returns',
+    'black_litterman',
+    'black_litterman_weights',
     'stress_test',
     'build_portfolio_report',
     'sharpe_significance',
@@ -95,5 +115,8 @@ __all__ = [
     'run_backtest',
     'BUILTIN_STRATEGIES',
     'load_custom_strategy',
-    'parse_strategy_params'
+    'parse_strategy_params',
+    'size_position',
+    'parse_param_grid',
+    'walk_forward'
 ]

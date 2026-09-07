@@ -935,6 +935,117 @@ def format_backtest_results(result: Dict[str, Any], ticker: str, strategy_name: 
     console.print(stats_table)
     console.print()
 
+    active_table = Table(title="vs Buy & Hold", box=box.ROUNDED, show_header=False,
+                         title_style="bold cyan")
+    active_table.add_column("Metric", style="bold", width=30)
+    active_table.add_column("Value", justify="right")
+    active_table.add_row(
+        "Alpha (annualized)",
+        Text("N/A", style="dim") if result.get('strategy_alpha') is None
+        or (isinstance(result.get('strategy_alpha'), float) and np.isnan(result['strategy_alpha']))
+        else format_percentage(result['strategy_alpha'])
+    )
+    active_table.add_row("Active Return (annualized)", format_percentage(result.get('strategy_active_return', np.nan)))
+    active_table.add_row(
+        "Information Ratio",
+        Text("N/A", style="dim") if result.get('strategy_information_ratio') is None
+        or (isinstance(result.get('strategy_information_ratio'), float) and np.isnan(result['strategy_information_ratio']))
+        else format_ratio(result['strategy_information_ratio'])
+    )
+    hit = result.get('strategy_hit_rate')
+    if hit is None or (isinstance(hit, float) and np.isnan(hit)):
+        hit_text = Text("N/A", style="dim")
+    else:
+        hit_text = format_percentage(hit)
+    active_table.add_row("Hit Rate (days beating baseline)", hit_text)
+    beta = result.get('strategy_beta_to_baseline')
+    active_table.add_row(
+        "Beta (to baseline)",
+        Text("N/A", style="dim") if beta is None or (isinstance(beta, float) and np.isnan(beta)) else Text(f"{beta:.2f}")
+    )
+    console.print(active_table)
+    console.print()
+
+
+def format_walk_forward_results(result: Dict[str, Any], ticker: str, strategy_name: str) -> None:
+    """
+    Display formatted walk-forward (out-of-sample) validation results.
+
+    Args:
+        result: Dict from backtest.walk_forward()
+        ticker: Stock ticker symbol
+        strategy_name: Human-readable strategy label
+    """
+    console.print()
+    panel = Panel(
+        "[dim]Parameters are tuned on each trailing in-sample window and then run "
+        "untouched on the following out-of-sample window. Alpha / hit rate / "
+        "information ratio are measured against the buy-and-hold baseline on "
+        "out-of-sample days only.[/dim]",
+        title=f"WALK-FORWARD - {ticker.upper()} - {strategy_name}",
+        border_style="magenta",
+        box=box.ROUNDED,
+    )
+    console.print(panel)
+    console.print()
+
+    table = Table(title="Out-of-Sample Performance", box=box.ROUNDED, show_lines=True,
+                  title_style="bold cyan")
+    table.add_column("Metric", style="bold", width=30)
+    table.add_column("Value", justify="right")
+
+    def _num(key, fmt, decimals=2):
+        v = result.get(key)
+        if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
+            return Text("N/A", style="dim")
+        return fmt(v, decimals) if callable(fmt) else fmt(v)
+
+    table.add_row("OOS Total Return", _num('oos_total_return', format_percentage))
+    table.add_row("OOS Annual Return", _num('oos_annual_return', format_percentage))
+    table.add_row("OOS Sharpe", _num('oos_sharpe', format_ratio))
+    table.add_row("Buy & Hold Total Return", _num('baseline_total_return', format_percentage))
+    table.add_row("Buy & Hold Annual Return", _num('baseline_annual_return', format_percentage))
+    table.add_row("Alpha (annualized)", _num('alpha', format_percentage))
+    table.add_row("Active Return (annualized)", _num('active_return', format_percentage))
+    table.add_row("Information Ratio", _num('information_ratio', format_ratio))
+    table.add_row("Hit Rate (days beating baseline)", _num('hit_rate', format_percentage))
+
+    table.add_section()
+    table.add_row("Folds", Text(str(result.get('n_folds', 'N/A')), style="cyan"))
+    table.add_row("Out-of-Sample Days", Text(str(result.get('oos_days', 'N/A')), style="cyan"))
+    table.add_row(
+        "Folds Beating Buy & Hold",
+        Text(f"{result.get('fold_beat_rate', float('nan')) * 100:.0f}%", style="cyan")
+    )
+    table.add_row("Selection Metric", Text(str(result.get('selection_metric', 'sharpe')), style="yellow"))
+    console.print(table)
+    console.print()
+
+    if result.get('folds'):
+        folds = result['folds']
+        fold_table = Table(title="Per-Fold Detail", box=box.ROUNDED, title_style="bold yellow")
+        fold_table.add_column("Fold", justify="center", style="bold")
+        fold_table.add_column("Test Window", justify="center", style="dim")
+        fold_table.add_column("Best Params", justify="center")
+        fold_table.add_column("OOS Return", justify="right")
+        fold_table.add_column("Baseline", justify="right")
+        fold_table.add_column("Beats Baseline", justify="center")
+        for i, f in enumerate(folds, 1):
+            params = ", ".join(f"{k}={v}" for k, v in sorted(f['best_params'].items())) or "n/a"
+            fmt_ret = lambda v: Text("N/A", style="dim") if v is None else format_percentage(v)
+            beat = "yes" if f['beat_baseline'] else "no"
+            beat_style = "green" if f['beat_baseline'] else "red"
+            fold_table.add_row(
+                str(i),
+                Text(f"{f['test_start']}-{f['test_end']}", style="dim"),
+                Text(params, style="yellow"),
+                fmt_ret(f['oos_strategy_total_return']),
+                fmt_ret(f['oos_baseline_total_return']),
+                Text(beat, style=beat_style),
+            )
+        console.print(fold_table)
+        console.print()
+
 
 def _cell_bg(value: float) -> str:
     """Map correlation [-1,1] to a Rich background color."""
@@ -993,13 +1104,34 @@ def format_portfolio_results(data: Dict[str, Any]) -> None:
         weights_table.add_column(ticker, justify="right", style="cyan")
 
     for strategy in weights.index:
-        if strategy in ('min_variance', 'tangency', 'efficient'):
-            weights_table.add_row(
-                Text(strategy.replace('_', ' ').title()),
-                *[Text(f"{w*100:.1f}%", style="white") for w in weights.loc[strategy]]
-            )
+        if strategy in ('min_variance', 'tangency', 'efficient', 'black_litterman'):
+            if strategy == 'black_litterman':
+                label_text = Text("Black-Litterman", style="bold magenta")
+                cells = [Text(f"{w*100:.1f}%", style="magenta") for w in weights.loc[strategy]]
+                weights_table.add_row(label_text, *cells)
+            else:
+                weights_table.add_row(
+                    Text(strategy.replace('_', ' ').title()),
+                    *[Text(f"{w*100:.1f}%", style="white") for w in weights.loc[strategy]]
+                )
     console.print(weights_table)
     console.print()
+
+    bl = data.get('bl')
+    if bl:
+        bl_table = Table(title="Black-Litterman Expected Returns", box=box.ROUNDED,
+                         title_style="bold magenta")
+        bl_table.add_column("Asset", style="bold")
+        bl_table.add_column("Implied (prior)", justify="right")
+        bl_table.add_column("Posterior", justify="right")
+        for asset in bl['implied_returns']:
+            bl_table.add_row(
+                Text(asset, style="bold"),
+                format_percentage(bl['implied_returns'][asset], colored=True),
+                format_percentage(bl['posterior_returns'][asset], colored=True),
+            )
+        console.print(bl_table)
+        console.print()
 
     # Portfolio stats
     stats = data['stats']

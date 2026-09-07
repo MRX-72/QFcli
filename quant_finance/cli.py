@@ -17,12 +17,15 @@ from .backtest import (
     prepare_backtest_data,
     load_custom_strategy,
     parse_strategy_params,
+    parse_param_grid,
+    walk_forward,
 )
-from .portfolio import build_portfolio_report, returns_matrix
+from .portfolio import build_portfolio_report, returns_matrix, black_litterman
 from .output import (
     format_results,
     format_comparison_results,
     format_backtest_results,
+    format_walk_forward_results,
     format_portfolio_results,
     export_to_dict
 )
@@ -65,7 +68,10 @@ Examples:
   qfcli AAPL --json             # Machine-readable JSON output
   qfcli --backtest AAPL -s sma_cross --cost 5     # Backtest a strategy
   qfcli --backtest AAPL --strategy-file strat.py  # Backtest a custom strategy
+  qfcli --backtest AAPL -s sma_cross --sizer target_vol  # Vol-target position sizing
+  qfcli --backtest AAPL --walk-forward --grid "fast=10,20;slow=40,80"  # OOS validation
   qfcli --portfolio AAPL MSFT NVDA KO --period 2y # Portfolio mode
+  qfcli --portfolio AAPL MSFT --bl --view NVDA=0.18 # Black-Litterman with a view
         """
     )
 
@@ -135,6 +141,94 @@ Examples:
         type=float,
         default=5.0,
         help='Slippage per trade in basis points (default: 5)'
+    )
+
+    parser.add_argument(
+        '--sizer',
+        type=str,
+        default='fixed',
+        choices=('fixed', 'target_vol', 'kelly'),
+        help="Position-sizing scheme (default: fixed). "
+             "target_vol scales exposure to a volatility target; "
+             "kelly applies fractional Kelly to the signal"
+    )
+
+    parser.add_argument(
+        '--sizer-target',
+        type=float,
+        default=0.15,
+        help='Annual volatility target for --sizer target_vol (default: 0.15)'
+    )
+
+    parser.add_argument(
+        '--sizer-window',
+        type=int,
+        default=20,
+        help='Rolling window (days) for target_vol sizing or kelly stats (default: 20)'
+    )
+
+    parser.add_argument(
+        '--max-leverage',
+        type=float,
+        default=1.0,
+        help='Maximum gross exposure for target_vol sizing (default: 1.0)'
+    )
+
+    parser.add_argument(
+        '--kelly-fraction',
+        type=float,
+        default=0.25,
+        help='Fraction of full Kelly applied by the kelly sizer (default: 0.25)'
+    )
+
+    parser.add_argument(
+        '--walk-forward',
+        action='store_true',
+        help='Validate strategy parameters out of sample with expanding-window walk-forward'
+    )
+
+    parser.add_argument(
+        '--grid',
+        type=str,
+        default=None,
+        metavar='"KEY=v1,v2;K2=v3,v4"',
+        help='Parameter grid for --walk-forward, parsed as a cartesian product'
+    )
+
+    parser.add_argument(
+        '--train-frac',
+        type=float,
+        default=0.6,
+        help='Initial in-sample fraction for --walk-forward (default: 0.6)'
+    )
+
+    parser.add_argument(
+        '--wf-step',
+        type=int,
+        default=63,
+        help='Days added to the in-sample window per --walk-forward fold (default: 63)'
+    )
+
+    parser.add_argument(
+        '--bl',
+        action='store_true',
+        help='Use Black-Litterman construction in portfolio mode (prior + optional views)'
+    )
+
+    parser.add_argument(
+        '--view',
+        type=str,
+        action='append',
+        default=None,
+        metavar='TICKER=RATE',
+        help='Absolute expected-return view for Black-Litterman, e.g. NVDA=0.18 (repeatable)'
+    )
+
+    parser.add_argument(
+        '--view-confidence',
+        type=float,
+        default=None,
+        help='Per-view error variance for Black-Litterman views (default: 0.0025)'
     )
 
     parser.add_argument(
@@ -221,8 +315,19 @@ def analyze_with_progress(ticker: str, period: str, risk_free_rate: float, bench
 
 
 def emit_json(data) -> None:
-    """Write a dict to stdout as clean, sortable JSON."""
-    sys.stdout.write(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    """Write a dict to stdout as clean, sortable JSON.
+
+    Internal keys prefixed with underscore (e.g. daily return Series used for
+    walk-forward stitching) are stripped so the output stays JSON-serializable.
+    """
+    clean = {}
+    for k, v in data.items():
+        if k.startswith('_'):
+            continue
+        if isinstance(v, dict):
+            v = {kk: vv for kk, vv in v.items() if not kk.startswith('_')}
+        clean[k] = v
+    sys.stdout.write(json.dumps(clean, indent=2, sort_keys=True) + "\n")
 
 
 def main() -> int:
@@ -263,16 +368,50 @@ def main() -> int:
                     extra_params.setdefault('lookback', args.lookback)
                     extra_params.setdefault('hold', args.hold)
 
+            if args.sizer == 'target_vol':
+                sizer_kwargs = {'target_vol': args.sizer_target, 'window': args.sizer_window,
+                                'max_leverage': args.max_leverage}
+            elif args.sizer == 'kelly':
+                sizer_kwargs = {'fraction': args.kelly_fraction, 'window': args.sizer_window}
+            else:
+                sizer_kwargs = {}
+
+            if args.walk_forward:
+                grid = parse_param_grid(args.grid) if args.grid else [dict(extra_params)]
+                wf = walk_forward(
+                    prices, strategy, grid,
+                    sizer=args.sizer, sizer_kwargs=sizer_kwargs,
+                    cost_bps=args.cost, slippage_bps=args.slippage,
+                    risk_free_rate=args.risk_free_rate,
+                    train_frac=args.train_frac, step=args.wf_step,
+                )
+                if args.json:
+                    wf['strategy'] = {
+                        'label': strategy_label,
+                        'params': extra_params,
+                        'grid': grid,
+                    }
+                    emit_json(wf)
+                else:
+                    format_walk_forward_results(wf, ticker, label)
+                return 0
+
             result = run_backtest(
                 prices,
                 strategy,
                 cost_bps=args.cost,
                 slippage_bps=args.slippage,
                 risk_free_rate=args.risk_free_rate,
+                sizer=args.sizer,
+                sizer_kwargs=sizer_kwargs,
                 **extra_params
             )
             if args.json:
-                result['strategy'] = {'label': strategy_label, 'params': extra_params}
+                result['strategy'] = {
+                    'label': strategy_label,
+                    'params': extra_params,
+                    'sizer': args.sizer if args.sizer != 'fixed' else None,
+                }
                 emit_json(result)
             else:
                 format_backtest_results(result, ticker, label)
@@ -295,12 +434,37 @@ def main() -> int:
                 dfs.append(df.assign(Close=df['Close']))
             ret_m = returns_matrix(dfs)
             ret_m.columns = [t.upper() for t in args.portfolio]
-            report = build_portfolio_report(ret_m, risk_free_rate=args.risk_free_rate)
+
+            bl = None
+            if args.bl or args.view:
+                views = {}
+                for token in args.view or []:
+                    if '=' not in token:
+                        raise ValueError(f"Invalid view '{token}' (expected TICKER=RATE, e.g. NVDA=0.18)")
+                    tk, _, rate = token.partition('=')
+                    views[tk.strip().upper()] = float(rate.strip())
+                bl = black_litterman(
+                    ret_m,
+                    views=views if views else None,
+                    view_confidence=args.view_confidence,
+                    risk_free_rate=args.risk_free_rate,
+                )
+
+            report = build_portfolio_report(
+                ret_m,
+                risk_free_rate=args.risk_free_rate,
+                bl=bl,
+            )
             if args.json:
-                emit_json({'tickers': report['tickers'],
-                           'weights': report['weights'].to_dict(orient='index'),
-                           'stats': report['stats'],
-                           'stress': report['stress']})
+                payload = {
+                    'tickers': report['tickers'],
+                    'weights': report['weights'].to_dict(orient='index'),
+                    'stats': report['stats'],
+                    'stress': report['stress'],
+                }
+                if bl is not None:
+                    payload['bl'] = report['bl']
+                emit_json(payload)
             else:
                 format_portfolio_results(report)
         except ValueError as e:

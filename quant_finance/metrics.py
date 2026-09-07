@@ -461,6 +461,72 @@ def bootstrap_conf_interval(
     return {'ci_low': float(low), 'ci_high': float(high), 'n_boot': n_boot}
 
 
+def active_performance(
+    returns: pd.Series,
+    baseline_returns: pd.Series,
+    risk_free_rate: float = 0.0
+) -> Dict[str, float]:
+    """
+    Benchmark-adjusted evaluation of a return stream against a baseline.
+
+    This is the honest question for any strategy: *does it beat buy-and-hold?*
+    Reported (all on the strategy side, benchmarked against ``baseline``):
+
+        alpha                - annualized CAPM-style alpha of the strategy
+                               (intercept of the regression of strategy excess
+                               returns on baseline excess returns, * 252)
+        beta_to_baseline     - slope of that regression
+        active_return        - annualized mean arithmetic excess return
+        information_ratio    - annualized active return / active volatility
+        hit_rate             - fraction of days the strategy beats the baseline
+
+    Args:
+        returns: Daily strategy returns
+        baseline_returns: Daily baseline (buy-and-hold) returns
+        risk_free_rate: Annual risk-free rate as decimal
+
+    Returns:
+        Dict with alpha, beta_to_baseline, active_return, information_ratio,
+        hit_rate (NaN when there is insufficient overlapping data)
+    """
+    df = pd.concat({'strat': returns, 'base': baseline_returns}, axis=1, join='inner')
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+    if len(df) < 3:
+        return {
+            'alpha': np.nan,
+            'beta_to_baseline': np.nan,
+            'active_return': np.nan,
+            'information_ratio': np.nan,
+            'hit_rate': np.nan,
+        }
+
+    daily_rf = risk_free_rate / 252.0
+    strat = df['strat']
+    base = df['base']
+    y = strat - daily_rf
+    x = base - daily_rf
+
+    var_x = float(np.var(x, ddof=1))
+    if var_x <= 1e-16:
+        beta_val = np.nan
+        alpha_daily = float(y.mean())
+    else:
+        beta_val = float(np.cov(y, x, ddof=1)[0, 1] / var_x)
+        alpha_daily = float(y.mean() - beta_val * x.mean())
+
+    active = strat - base
+    active_std = float(active.std(ddof=1))
+    ir = float(active.mean() / active_std * np.sqrt(252)) if active_std > 0 else np.nan
+
+    return {
+        'alpha': alpha_daily * 252,
+        'beta_to_baseline': beta_val,
+        'active_return': float(active.mean() * 252),
+        'information_ratio': ir,
+        'hit_rate': float((active > 0).mean()),
+    }
+
+
 def worst_rolling_return(returns: pd.Series, window: int = 30) -> float:
     """
     Worst contiguous N-day cumulative return over the history.

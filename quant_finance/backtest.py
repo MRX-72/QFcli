@@ -11,7 +11,7 @@ Everything is pure pandas/numpy and deterministic, so the whole module is
 testable offline with synthetic price series.
 """
 
-from typing import Callable, Dict
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -22,7 +22,8 @@ from .metrics import (
     sharpe_ratio,
     sortino_ratio,
     max_drawdown,
-    daily_return_stats
+    daily_return_stats,
+    active_performance
 )
 
 
@@ -178,12 +179,90 @@ def _coerce_param(raw: str):
     return raw
 
 
+def size_position(
+    signal: pd.Series,
+    returns: pd.Series,
+    sizer: str = 'fixed',
+    sizer_kwargs: Optional[Dict] = None
+) -> pd.Series:
+    """
+    Apply a position-sizing scheme to a target signal series.
+
+    The signal (target exposure in -1..1) is the *what*; the sizer is the
+    *how much*. This never expands the signal beyond the strategy's stated
+    direction - it only scales the magnitude.
+
+    Schemes:
+        fixed      - signal * weight (default weight 1.0, i.e. unchanged)
+        target_vol - scale exposure so that rolling realized volatility
+                     (windows trades) times exposure approximates a target
+                     annual volatility, capped at max_leverage. Volatility
+                     targets position size inversely, so it naturally cuts
+                     exposure in choppy markets (a classical risk-parity
+                     podding approach).
+        kelly      - fractional Kelly on trailing win-rate / average win /
+                     average loss over the trailing window:
+                     f = win_rate - (1 - win_rate) / (avg_win / avg_loss),
+                     capped to [0, 1] and multiplied by ``fraction`` (default
+                     0.25, i.e. quarter-Kelly). This is a heuristic sizing
+                     rule built on the daily outcome distribution; it is NOT
+                     a guarantee of optimality, and it only reduces risk.
+
+    Only data available up to each day is used (no lookahead).
+
+    Args:
+        signal: Target exposure series in -1..1
+        returns: Daily returns series aligned to signal
+        sizer: 'fixed', 'target_vol' or 'kelly'
+        sizer_kwargs: See the scheme descriptions above
+
+    Returns:
+        Sized position series (same index as signal)
+    """
+    kw = sizer_kwargs or {}
+    s = signal.fillna(0.0).clip(-1.0, 1.0)
+
+    if sizer == 'fixed':
+        return s * float(kw.get('weight', 1.0))
+
+    if sizer == 'target_vol':
+        target = float(kw.get('target_vol', 0.15))
+        window = int(kw.get('window', 20))
+        max_lev = float(kw.get('max_leverage', 1.0))
+        vol = returns.rolling(window=window).std(ddof=1) * np.sqrt(252)
+        exposure = (target / vol.replace(0, np.nan)).clip(upper=max_lev)
+        exposure = exposure.reindex(s.index).fillna(1.0).clip(upper=max_lev)
+        return s * exposure
+
+    if sizer == 'kelly':
+        fraction = float(kw.get('fraction', 0.25))
+        window = int(kw.get('window', 252))
+        # masked rolling means need a floor on observed days; otherwise every
+        # window that contains any masked-out day would be NaN forever
+        min_periods = max(10, min(window, window // 4))
+        pos_mask = returns > 0
+        traded = returns.abs() > 0
+        win_rate = pos_mask.astype(float).rolling(window, min_periods=min_periods).mean()
+        avg_win = returns.where(pos_mask).rolling(window, min_periods=min_periods).mean()
+        avg_loss = (-returns).where(traded & ~pos_mask).rolling(window, min_periods=min_periods).mean()
+        ratio = avg_win / avg_loss.replace(0, np.nan)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            f = win_rate - (1 - win_rate) / ratio
+        f = f.replace([np.inf, -np.inf], np.nan).clip(lower=0.0, upper=1.0)
+        f = f.fillna(0.0)
+        return s * (f * fraction)
+
+    raise ValueError(f"Unknown sizer '{sizer}' (choose fixed, target_vol or kelly).")
+
+
 def run_backtest(
     prices: pd.Series,
     strategy: Callable,
     cost_bps: float = 0.0,
     slippage_bps: float = 0.0,
     risk_free_rate: float = 0.0,
+    sizer: str = 'fixed',
+    sizer_kwargs: Optional[Dict] = None,
     **strategy_kwargs
 ) -> Dict:
     """
@@ -192,7 +271,9 @@ def run_backtest(
     Position is the strategy signal shifted one day forward (no lookahead).
     Each time exposure changes, a transaction cost is charged against the
     traded notional. Returns a flat dict of performance stats plus the
-    buy-and-hold baseline for context.
+    buy-and-hold baseline for context, and a benchmark-adjusted evaluation
+    (alpha, beta, hit rate, information ratio vs buy-and-hold) that makes it
+    easy to tell whether the strategy actually beats just holding the asset.
 
     Args:
         prices: Series of daily closing prices
@@ -200,10 +281,16 @@ def run_backtest(
         cost_bps: Round-trip commission in basis points (e.g. 5 == 0.05%)
         slippage_bps: Slippage per trade in basis points
         risk_free_rate: Annual risk-free rate for Sharpe/Sortino
+        sizer: Position-sizing scheme ('fixed', 'target_vol' or 'kelly')
+        sizer_kwargs: Passed to size_position()
         **strategy_kwargs: Passed through to the strategy
 
     Returns:
-        Flat dict with strategy and baseline performance metrics
+        Flat dict with strategy and baseline performance metrics plus the
+        ``strategy_alpha``/``strategy_hit_rate`` style benchmark-adjusted keys.
+        Also carries ``_strategy_daily_returns`` and ``_baseline_daily_returns``
+        (underscore keys, used internally by walk_forward and stripped from
+        JSON output).
     """
     clean = prices.dropna()
     if len(clean) < 3:
@@ -213,6 +300,7 @@ def run_backtest(
 
     target = strategy(clean, **strategy_kwargs)
     target = target.reindex(clean.index).fillna(0.0).clip(-1.0, 1.0)
+    target = size_position(target, returns, sizer=sizer, sizer_kwargs=sizer_kwargs)
 
     # One-day shift: trade at the open of the following bar
     position = target.shift(1).fillna(0.0)
@@ -261,7 +349,202 @@ def run_backtest(
         'avg_daily_turnover': avg_daily_turnover,
         'days_in_market': float((position > 1e-9).mean()),
     })
+
+    # benchmark-adjusted evaluation vs buy-and-hold
+    active = active_performance(net, returns, risk_free_rate=risk_free_rate)
+    result.update({f'strategy_{k}': v for k, v in active.items()})
+
+    # daily return streams for walk-forward stitching (underscore -> hidden in JSON)
+    result['_strategy_daily_returns'] = net
+    result['_baseline_daily_returns'] = returns
     return result
+
+
+def parse_param_grid(text: str) -> List[Dict]:
+    """
+    Parse a ``key=v1,v2;key2=v3,v4`` grid spec into a cartesian param grid.
+
+    Example: ``--grid "fast=10,20;slow=40,80"`` produces
+    ``[{fast:10, slow:40}, {fast:10, slow:80}, {fast:20, slow:40}, {fast:20, slow:80}]``.
+    Values are coerced like ``--strategy-param`` (int/float/bool/str).
+
+    Args:
+        text: Grid specification string
+
+    Returns:
+        List of param dicts (one per grid point)
+
+    Raises:
+        ValueError: on malformed specs
+    """
+    from itertools import product
+
+    if not text or not text.strip():
+        raise ValueError("--grid requires a non-empty spec (e.g. 'fast=10,20;slow=40,80').")
+    axes: Dict[str, list] = {}
+    for clause in text.split(';'):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if '=' not in clause:
+            raise ValueError(f"Invalid grid clause '{clause}' (expected key=v1,v2,v3).")
+        key, _, raw = clause.partition('=')
+        key = key.strip()
+        values = [_coerce_param(v.strip()) for v in raw.split(',') if v.strip()]
+        if not values:
+            raise ValueError(f"Grid clause '{clause}' has no values.")
+        axes[key] = values
+
+    keys = list(axes)
+    return [dict(zip(keys, combo)) for combo in product(*(axes[k] for k in keys))]
+
+
+def walk_forward(
+    prices: pd.Series,
+    strategy: Callable,
+    param_grid: List[Dict],
+    sizer: str = 'fixed',
+    sizer_kwargs: Optional[Dict] = None,
+    cost_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+    risk_free_rate: float = 0.0,
+    train_frac: float = 0.6,
+    step: int = 63,
+    selection_metric: str = 'sharpe',
+    min_test: int = 30
+) -> Dict:
+    """
+    Walk-forward (expanding-window) validation of a strategy's parameters.
+
+    The history is split into in-sample (train) / out-of-sample (test)
+    segments. For each fold the parameter combination with the best *training*
+    score (default annualized Sharpe) is selected, then the strategy is run
+    *without re-tuning* on the following test window. Out-of-sample daily
+    returns are stitched across folds into one honest out-of-sample equity
+    curve and evaluated against the buy-and-hold baseline (including alpha,
+    hit rate and information ratio via active_performance()).
+
+    This is the defensible way to answer *"does tuning actually survive out of
+    sample?"*: parameters are chosen on data the test fold has never seen.
+
+    Note: the exact day between two adjacent folds is not traded, so the
+    stitched equity curve compounds across a small non-traded gap.
+
+    Args:
+        prices: Series of daily closing prices
+        strategy: Strategy callable
+        param_grid: List of param dicts to evaluate per fold (see parse_param_grid)
+        sizer / sizer_kwargs / cost_bps / slippage_bps / risk_free_rate:
+            Shared with run_backtest()
+        train_frac: Fraction of history used as initial training data
+        step: Days added per fold to the in-sample window
+        selection_metric: Strategy metric maximized on the training window
+            (e.g. 'sharpe', 'sortino', 'annual_return')
+        min_test: Minimum test-window length in days
+
+    Returns:
+        Dict with aggregate out-of-sample stats, benchmark-adjusted evaluation,
+        fold-level details and the chosen selection_metric
+    """
+    clean = prices.dropna()
+    n = len(clean)
+    if n < 100:
+        raise ValueError("Walk-forward needs at least 100 price observations.")
+    if not param_grid:
+        raise ValueError("param_grid must contain at least one parameter combination.")
+
+    oos_start = int(n * train_frac)
+    if oos_start < 60:
+        raise ValueError("train_frac leaves too little training data; raise it or pass more history.")
+
+    folds: List[Dict] = []
+    oos_parts: List[pd.Series] = []
+    baseline_parts: List[pd.Series] = []
+
+    start = oos_start
+    while start + min_test <= n:
+        test_end = min(start + step, n)
+        if test_end - start < min_test:
+            break
+
+        train = clean.iloc[:start]
+        test = clean.iloc[start:test_end]
+
+        best = None
+        best_score = -np.inf
+        for params in param_grid:
+            res = run_backtest(
+                train, strategy,
+                cost_bps=cost_bps, slippage_bps=slippage_bps,
+                risk_free_rate=risk_free_rate,
+                sizer=sizer, sizer_kwargs=sizer_kwargs,
+                **params
+            )
+            score = res[f'strategy_{selection_metric}']
+            if score is None or (isinstance(score, float) and np.isnan(score)):
+                score = -np.inf
+            if score > best_score:
+                best_score = score
+                best = params
+
+        oos = run_backtest(
+            test, strategy,
+            cost_bps=cost_bps, slippage_bps=slippage_bps,
+            risk_free_rate=risk_free_rate,
+            sizer=sizer, sizer_kwargs=sizer_kwargs,
+            **best
+        )
+
+        folds.append({
+            'test_start': int(start),
+            'test_end': test_end,
+            'best_params': best,
+            'oos_n_days': int(oos['n_days']),
+            'selected_train_score': float(best_score),
+            'oos_strategy_total_return': oos['strategy_total_return'],
+            'oos_baseline_total_return': oos['baseline_total_return'],
+            'beat_baseline': bool(oos['strategy_total_return'] > oos['baseline_total_return']),
+        })
+        oos_parts.append(oos['_strategy_daily_returns'])
+        baseline_parts.append(oos['_baseline_daily_returns'])
+        start += step
+
+    if not folds:
+        raise ValueError("No complete walk-forward folds could be built; reduce train_frac or step.")
+
+    oos_returns = pd.concat(oos_parts)
+    oos_baseline = pd.concat(baseline_parts)
+
+    def _agg(series: pd.Series) -> Dict:
+        series = series.replace([np.inf, -np.inf], np.nan).dropna()
+        eq = (1 + series).cumprod()
+        return {
+            'total_return': float(eq.iloc[-1] - 1),
+            'annual_return': annual_return(eq),
+            'sharpe': sharpe_ratio(series, risk_free_rate=risk_free_rate, annualize=True),
+        }
+
+    agg = _agg(oos_returns)
+    base = _agg(oos_baseline)
+    active = active_performance(oos_returns, oos_baseline, risk_free_rate=risk_free_rate)
+
+    return {
+        'oos_total_return': agg['total_return'],
+        'oos_annual_return': agg['annual_return'],
+        'oos_sharpe': agg['sharpe'],
+        'baseline_total_return': base['total_return'],
+        'baseline_annual_return': base['annual_return'],
+        'alpha': active['alpha'],
+        'beta_to_baseline': active['beta_to_baseline'],
+        'active_return': active['active_return'],
+        'information_ratio': active['information_ratio'],
+        'hit_rate': active['hit_rate'],
+        'oos_days': int(len(oos_returns.replace([np.inf, -np.inf], np.nan).dropna())),
+        'n_folds': len(folds),
+        'fold_beat_rate': float(np.mean([f['beat_baseline'] for f in folds])),
+        'selection_metric': selection_metric,
+        'folds': folds,
+    }
 
 
 def prepare_backtest_data(df: pd.DataFrame, period: str = '1y') -> pd.Series:
