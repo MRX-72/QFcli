@@ -101,3 +101,27 @@ def get_date_range(df: pd.DataFrame) -> Tuple[str, str]:
     start_date = df.index[0].strftime('%Y-%m-%d')
     end_date = df.index[-1].strftime('%Y-%m-%d')
     return start_date, end_date
+
+
+def fetch_benchmark_returns(ticker: str, period: str = '1y') -> pd.Series:
+    """
+    Fetch daily returns for a benchmark/index (e.g. '^GSPC', 'SPY').
+
+    Args:
+        ticker: Benchmark symbol
+        period: Time period (must match the asset's period)
+
+    Returns:
+        Series of daily benchmark returns
+
+    Raises:
+        ValueError: If benchmark data cannot be fetched
+    """
+    try:
+        df = yf.Ticker(ticker.upper()).history(period=period)
+    except Exception as e:
+        raise ValueError(f"Error fetching benchmark data for '{ticker}': {str(e)}")
+
+    if df.empty:
+        raise ValueError(f"No data found for benchmark '{ticker}'.")
+    return df['Close'].pct_change().dropna()

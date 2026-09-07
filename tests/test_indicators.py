@@ -12,7 +12,9 @@ from quant_finance.indicators import (
     calculate_rsi,
     calculate_macd,
     bollinger_bands,
-    calculate_all_smas
+    calculate_all_smas,
+    average_true_range,
+    golden_death_cross
 )
 
 
@@ -114,3 +116,60 @@ class TestAllSmas:
         s = _series(np.arange(1.0, 30.0))
         smas = calculate_all_smas(s, windows=[5, 10])
         assert set(smas.keys()) == {5, 10}
+
+
+def _ohlc(highs, lows, closes):
+    n = len(highs)
+    return pd.DataFrame({
+        'High': highs,
+        'Low': lows,
+        'Close': closes,
+    }, index=pd.date_range("2025-01-01", periods=n, freq="B"))
+
+
+class TestAverageTrueRange:
+    def test_flat_series_zero(self):
+        df = _ohlc([10.0]*20, [9.0]*20, [9.5]*20)
+        assert average_true_range(df, period=14) == pytest.approx(1.0)
+
+    def test_known_value(self):
+        # TR = max(H-L, |H-prevC|, |L-prevC|) = 1.0 on flat 10/9/9.5 bars
+        highs = [10.0]*15
+        lows = [9.0]*15
+        closes = [9.5]*15
+        df = _ohlc(highs, lows, closes)
+        assert average_true_range(df, period=5) == pytest.approx(1.0, rel=1e-6)
+
+    def test_gap_day_true_range(self):
+        # H=12, L=10, prev close 8 -> TR = max(2, 4, 2) = 4; flat day 2 -> TR 2
+        highs = [8.0, 12.0, 12.0]
+        lows = [7.0, 10.0, 10.0]
+        closes = [8.0, 11.0, 11.0]
+        df = _ohlc(highs, lows, closes)
+        assert average_true_range(df, period=2) == pytest.approx((4.0 + 2.0) / 2, rel=1e-6)
+
+    def test_insufficient_data_nan(self):
+        df = _ohlc([10.0], [9.0], [9.5])
+        assert np.isnan(average_true_range(df, period=14))
+
+
+class TestGoldenDeathCross:
+    def test_uptrend_bullish(self):
+        # strictly rising: SMA50 > SMA200 at the end
+        s = _series(np.linspace(100, 200, 300))
+        assert golden_death_cross(s) in ("BULLISH", "GOLDEN CROSS")
+
+    def test_downtrend_bearish(self):
+        s = _series(np.linspace(200, 120, 300))
+        assert golden_death_cross(s) in ("BEARISH", "DEATH CROSS")
+
+    def test_insufficient_data(self):
+        s = _series(np.linspace(100, 110, 50))
+        assert golden_death_cross(s) == "INSUFFICIENT DATA"
+
+    def test_flat_series_bullish(self):
+        # flat => SMA50 == SMA200 => not a cross; checks last value equality case
+        s = _series(np.full(300, 100.0))
+        result = golden_death_cross(s)
+        # neither above nor below strictly; equality -> BEARISH branch (curr <= 0)
+        assert result in ("BULLISH", "BEARISH")

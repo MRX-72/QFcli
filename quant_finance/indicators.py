@@ -237,3 +237,77 @@ def calculate_macd(prices: Union[pd.Series, np.ndarray],
         'signal_line': signal.iloc[-1],
         'histogram': hist.iloc[-1]
     }
+
+
+def average_true_range(df: pd.DataFrame, period: int = 14) -> float:
+    """
+    Calculate the Average True Range (volatility indicator).
+
+    True Range captures the full range of a single bar: the high-low spread,
+    plus any gap beyond the prior close. ATR is the rolling mean of TR.
+
+    Args:
+        df: OHLC DataFrame with High, Low, Close columns
+        period: Lookback period (default: 14)
+
+    Returns:
+        Most recent ATR value, or NaN if insufficient data
+    """
+    if len(df) < 2:
+        return np.nan
+
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+
+    atr = tr.rolling(window=period).mean()
+    return float(atr.iloc[-1]) if np.isfinite(atr.iloc[-1]) else np.nan
+
+
+def golden_death_cross(prices: Union[pd.Series, np.ndarray],
+                       fast_period: int = 50,
+                       slow_period: int = 200) -> str:
+    """
+    Detect a golden or death cross from the moving-average crossover.
+
+    A golden cross (fast MA crossing above the slow MA) is a classic bullish
+    trend signal; a death cross is the bearish counterpart. The signal is
+    computed from the *current* relationship between the averages, which is
+    the direction the trend is in right now.
+
+    Args:
+        prices: Series or array of closing prices
+        fast_period: Fast MA window (default: 50)
+        slow_period: Slow MA window (default: 200)
+
+    Returns:
+        'GOLDEN CROSS', 'DEATH CROSS', 'BULLISH', 'BEARISH',
+        or 'INSUFFICIENT DATA'
+    """
+    if isinstance(prices, np.ndarray):
+        prices = pd.Series(prices)
+
+    light = prices.rolling(window=fast_period).mean()
+    heavy = prices.rolling(window=slow_period).mean()
+
+    diff = light - heavy
+    if np.isnan(diff.iloc[-1]):
+        return "INSUFFICIENT DATA"
+
+    prev = diff.iloc[-2] if len(diff) >= 2 else np.nan
+    curr = diff.iloc[-1]
+
+    if not np.isnan(prev):
+        if prev <= 0 < curr:
+            return "GOLDEN CROSS"
+        if prev >= 0 > curr:
+            return "DEATH CROSS"
+
+    return "BULLISH" if curr > 0 else "BEARISH"

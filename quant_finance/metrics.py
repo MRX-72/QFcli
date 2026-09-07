@@ -197,3 +197,128 @@ def daily_return_stats(returns: pd.Series) -> Dict[str, float]:
         'worst_day': worst_day,
         'win_ratio': win_ratio
     }
+
+
+def sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.0, annualize: bool = True) -> float:
+    """
+    Calculate the Sortino ratio (return per unit of downside risk).
+
+    Unlike the Sharpe ratio, only below-target (downside) volatility is
+    penalized, so it distinguishes healthy returns from merely volatile ones.
+
+    Formula:
+        downside_dev = sqrt(mean(min(r_t - r_f_daily, 0)^2))
+        Sortino = (mean(r) - r_f_daily) / downside_dev * sqrt(252)
+
+    Args:
+        returns: Series of daily returns
+        risk_free_rate: Annual risk-free rate as decimal
+        annualize: Scale to an annualized ratio (default: True)
+
+    Returns:
+        Sortino ratio, or 0.0 if there is no downside deviation
+    """
+    clean = returns.dropna()
+    if clean.empty:
+        return 0.0
+
+    daily_rf = risk_free_rate / 252 if annualize else risk_free_rate
+    excess = clean - daily_rf
+
+    downside = excess[excess < 0]
+    if downside.empty:
+        return 0.0
+
+    downside_dev = float(np.sqrt(np.mean(np.square(downside))))
+    if downside_dev == 0:
+        return 0.0
+
+    ratio = float(np.mean(excess) / downside_dev)
+    return ratio * np.sqrt(252) if annualize else ratio
+
+
+def value_at_risk(returns: pd.Series, confidence: float = 0.95, annualize: bool = True) -> float:
+    """
+    Calculate historical Value at Risk (VaR).
+
+    The worst expected loss over the period at a given confidence level,
+    estimated directly from the empirical return distribution rather than a
+    normal assumption.
+
+    Formula:
+        VaR = -percentile(returns, (1 - confidence))
+    annualized: VaR * sqrt(252)
+
+    Args:
+        returns: Series of daily returns
+        confidence: Confidence level between 0 and 1 (default: 0.95)
+        annualize: Annualize the result (default: True)
+
+    Returns:
+        VaR as a positive decimal (e.g., 0.03 means a 3% expected max loss)
+    """
+    clean = returns.dropna()
+    if clean.empty:
+        return 0.0
+
+    quantile = 1.0 - confidence
+    daily_var = -float(np.percentile(clean.values, quantile * 100))
+    daily_var = max(daily_var, 0.0)
+
+    return daily_var * np.sqrt(252) if annualize else daily_var
+
+
+def beta(returns: pd.Series, market_returns: pd.Series) -> float:
+    """
+    Calculate beta (systematic risk) of an asset relative to a market.
+
+    Formula:
+        beta = Cov(r_asset, r_market) / Var(r_market)
+
+    Args:
+        returns: Series of daily returns
+        market_returns: Series of daily market returns
+
+    Returns:
+        Beta coefficient, or NaN if insufficient data
+    """
+    clean = pd.concat([returns, market_returns], axis=1, join="inner").dropna()
+    if len(clean) < 2:
+        return np.nan
+
+    var_market = float(np.var(clean.iloc[:, 1], ddof=1))
+    if var_market == 0:
+        return np.nan
+
+    cov = float(np.cov(clean.iloc[:, 0], clean.iloc[:, 1])[0, 1])
+    return cov / var_market
+
+
+def yearly_returns(prices: Union[pd.Series, np.ndarray]) -> Dict[str, float]:
+    """
+    Calculate calendar-year returns from a daily price series.
+
+    Args:
+        prices: Series of closing prices indexed by date
+
+    Returns:
+        Dictionary mapping "YYYY" -> total return for that calendar year
+    """
+    if isinstance(prices, np.ndarray):
+        return {}
+
+    clean = prices.dropna()
+    if clean.empty:
+        return {}
+
+    by_year = clean.groupby(clean.index.year)
+    yearly = {}
+    for year, group in by_year:
+        if len(group) < 2:
+            continue
+        p_start = group.iloc[0]
+        p_end = group.iloc[-1]
+        if p_start == 0:
+            continue
+        yearly[str(year)] = (p_end - p_start) / p_start
+    return yearly

@@ -46,6 +46,7 @@ qfcli --compare A B           Compare two stocks side-by-side
 qfcli NVDA                    # default period: 1y
 qfcli AAPL --period 5y        # 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
 qfcli SPY --rf 0.045          # risk-free rate for Sharpe ratio
+qfcli NVDA --benchmark SPY    # beta vs S&P 500 ETF
 qfcli AAPL --json             # machine-readable JSON
 ```
 
@@ -56,6 +57,24 @@ qfcli --compare GOOGL META
 qfcli -c BTC-USD ETH-USD --period 6mo
 ```
 
+### Terminal visuals
+
+The text output includes a few lightweight, dependency-free visualizations:
+
+- A **price sparkline** of the last 60 sessions, with per-bar up/down coloring.
+- A **trend regime panel** showing whether the 50-day average sits above or below
+  the 200-day average (golden/death cross detection).
+- An **RSI position gauge** inside the risk table.
+- A **yearly returns table** with green/red color-coding per calendar year.
+
+```
+Price trend (last 60 sessions)
+▁▂▃▂▄▅▆▇█▇▆▅▆▇█▇▅▃▂▃▄▅▆▇█▇▆▅▄▃▂▃▄▅▆▇▆▅▄▃▂▃▄▅▆▇█▇▆▅
+
+Market regime: BULLISH (SMA-50 > SMA-200)
+Period high: $332.12   Period low: $218.77
+```
+
 ### Options
 
 | Flag | Description |
@@ -63,6 +82,7 @@ qfcli -c BTC-USD ETH-USD --period 6mo
 | `-c, --compare T1 T2` | Compare two tickers |
 | `--period`            | Data period (default `1y`) |
 | `--rf RATE`           | Annual risk-free rate (default `0.0`) |
+| `--benchmark SYMBOL`  | Benchmark/index for beta (e.g. `SPY`, `^GSPC`); single-stock mode only |
 | `--json`              | Emit machine-readable JSON |
 
 ## Example output
@@ -86,20 +106,29 @@ Risk Score              MODERATE
   "current_price": 319.97,
   "returns": {
     "cumulative": 0.0297,
-    "sharpe_ratio": 1.7429
+    "sharpe_ratio": 1.7429,
+    "sortino_ratio": 2.1
   },
   "risk_metrics": {
     "max_drawdown": -0.1271,
+    "value_at_risk_95": 0.0241,
+    "beta": 1.12,
     "risk_score": "MODERATE"
+  },
+  "trend": {
+    "golden_cross": "BULLISH",
+    "price_high": 332.12,
+    "price_low": 218.77
   }
 }
 ```
 
 ## Metrics
 
-- **Returns**: cumulative return, average daily return, annualized volatility, Sharpe ratio, max drawdown, win ratio
-- **Technicals**: SMA (20/50/200), RSI-14, MACD (12,26,9), Bollinger Bands (20,2), rate of change (12-day)
+- **Returns**: cumulative return, average daily return, annualized volatility, Sharpe ratio, **Sortino ratio**, max drawdown, win ratio, **VaR (95%, historical)**, **beta vs a chosen benchmark**
+- **Technicals**: SMA (20/50/200), RSI-14, MACD (12,26,9), Bollinger Bands (20,2), rate of change (12-day), **ATR-14**, **golden/death cross detection**
 - **Signals**: price-vs-moving-average bullish/bearish labels; risk bucket derived from annualized volatility (<15% stable, 15–30% moderate, >30% high)
+- **Calendar**: per-year return breakdown
 
 See `quant_finance/metrics.py` and `quant_finance/indicators.py` for the exact
 formulas.

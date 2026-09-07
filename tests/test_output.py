@@ -8,7 +8,9 @@ import pytest
 from quant_finance.output import (
     export_to_dict,
     format_price,
-    format_percentage
+    format_percentage,
+    sparkline_levels,
+    gauge_bar
 )
 
 
@@ -53,6 +55,84 @@ class TestExportToDict:
         out = export_to_dict('AAPL', 'Apple Inc.', metrics)
         assert out['moving_averages']['sma_20']['value'] is None
         assert out['moving_averages']['sma_50']['value'] == 180.0
+
+    def test_new_fields_exported(self):
+        metrics = self._metrics()
+        metrics['sortino_ratio'] = 1.8
+        metrics['value_at_risk'] = 0.04
+        metrics['atr'] = 2.5
+        metrics['beta'] = 1.15
+        metrics['golden_cross'] = 'GOLDEN CROSS'
+        metrics['trend'] = {
+            'prices': [100.0, 102.0],
+            'high': 105.0,
+            'low': 95.0
+        }
+        out = export_to_dict('AAPL', 'Apple Inc.', metrics)
+        assert out['returns']['sortino_ratio'] == 1.8
+        assert out['risk_metrics']['value_at_risk_95'] == 0.04
+        assert out['risk_metrics']['atr_14'] == 2.5
+        assert out['risk_metrics']['beta'] == 1.15
+        assert out['trend']['golden_cross'] == 'GOLDEN CROSS'
+        assert out['trend']['price_high'] == 105.0
+
+    def test_beta_none_exported_as_none(self):
+        metrics = self._metrics()
+        metrics['beta'] = None
+        metrics['trend'] = {'prices': [], 'high': np.nan, 'low': np.nan}
+        out = export_to_dict('AAPL', 'Apple Inc.', metrics)
+        assert out['risk_metrics']['beta'] is None
+
+
+class TestSparkline:
+    def test_short_series_passthrough_length(self):
+        levels = sparkline_levels([1, 2, 3, 4], width=10)
+        assert len(levels) == 4
+        assert all(0 <= l <= 7 for l in levels)
+
+    def test_monotonic_levels_increase(self):
+        levels = sparkline_levels([1, 2, 3, 4, 5], width=5)
+        assert levels == sorted(levels)
+        assert levels[0] == 0
+        assert levels[-1] == 7
+
+    def test_flat_series_mid_level(self):
+        assert sparkline_levels([4.0, 4.0, 4.0], width=3) == [3, 3, 3]
+
+    def test_downsampling_respects_width(self):
+        values = list(range(100))
+        assert len(sparkline_levels(values, width=30)) == 30
+
+    def test_empty_values(self):
+        assert sparkline_levels([], width=10) == []
+
+
+class TestGauge:
+    def test_at_low_is_green_range(self):
+        text = gauge_bar(30, 30, 70, width=20)
+        # returns a rich Text with style containing 'green'
+        styles = {span.style for span in text.spans}
+        assert any('green' in str(s) for s in styles if s)
+
+    def test_at_high_is_red_range(self):
+        text = gauge_bar(70.0, 30, 70, width=20)
+        styles = {span.style for span in text.spans}
+        assert any('red' in str(s) for s in styles if s)
+
+    def test_middle_is_yellow(self):
+        text = gauge_bar(50.0, 30, 70, width=20)
+        styles = {span.style for span in text.spans}
+        assert any('yellow' in str(s) for s in styles if s)
+
+    def test_bounds_clamping(self):
+        text = gauge_bar(200.0, 30, 70, width=20)
+        assert '█' in text.plain
+        text2 = gauge_bar(-100.0, 30, 70, width=20)
+        assert '░' in text2.plain
+
+    def test_equal_range_center(self):
+        text = gauge_bar(5.0, 5.0, 5.0, width=10)
+        assert len(text.plain.replace('[', '').replace(']', '')) == 10
 
 
 class TestFormatting:

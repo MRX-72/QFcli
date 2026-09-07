@@ -116,6 +116,105 @@ def format_ratio(value: float, decimals: int = 2, colored: bool = True) -> Text:
         return Text(text)
 
 
+def sparkline_levels(values: list, width: int = 40) -> list:
+    """
+    Map a list of values to sparkline heights (0..7) at a given width.
+
+    Values are downsampled to 'width' buckets, each bucket rendered at its
+    last value, then normalized to the 8 vertical block levels.
+
+    Args:
+        values: List of numeric values (ordered oldest -> newest)
+        width: Target number of columns (default: 40)
+
+    Returns:
+        List of integer levels in range 0..7
+    """
+    if not values or width <= 0:
+        return []
+
+    levels = []
+    n = len(values)
+    if n <= width:
+        sampled = values
+    else:
+        idx = np.linspace(0, n - 1, width).astype(int)
+        sampled = [values[i] for i in idx]
+
+    lo = float(min(sampled))
+    hi = float(max(sampled))
+
+    if hi == lo:
+        return [3] * len(sampled)
+
+    return [
+        int(round((v - lo) / (hi - lo) * 7)) for v in sampled
+    ]
+
+
+_BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def render_sparkline(values: list, width: int = 40) -> Text:
+    """
+    Render a unicode block sparkline with per-bar up/down coloring.
+
+    Args:
+        values: List of numeric values (ordered oldest -> newest)
+        width: Target number of columns (default: 40)
+
+    Returns:
+        Rich Text object
+    """
+    levels = sparkline_levels(values, width)
+    text = Text()
+    prev = None
+    for i, level in enumerate(levels):
+        char = _BLOCKS[min(max(level, 0), 7)]
+        color = "dim"
+        if i > 0 and prev is not None:
+            color = "green" if values[i] >= values[i - 1] else "red"
+        elif i > 0:
+            color = "dim"
+        text.append(char, style=color)
+        prev = values[i]
+    return text
+
+
+def gauge_bar(value: float, low: float, high: float, width: int = 20) -> Text:
+    """
+    Render a horizontal gauge showing where 'value' sits between low and high.
+
+    The filled region is colored by zone: green at/below low (favorable,
+    e.g. oversold), red at/above high (e.g. overbought), yellow in between.
+
+    Args:
+        value: Current value
+        low: Range minimum
+        high: Range maximum
+        width: Total number of columns (default: 20)
+
+    Returns:
+        Rich Text object
+    """
+    if high == low:
+        frac = 0.5
+    else:
+        frac = (value - low) / (high - low)
+    frac = min(max(frac, 0.0), 1.0)
+
+    filled = int(round(frac * width))
+    text = Text()
+    if value <= low:
+        color = "green"
+    elif value >= high:
+        color = "red"
+    else:
+        color = "yellow"
+    text.append("[" + "█" * filled + "░" * (width - filled) + "]", style=color)
+    return text
+
+
 def create_returns_table(metrics: Dict[str, Any]) -> Table:
     """
     Create a Rich table for returns analysis.
@@ -135,6 +234,7 @@ def create_returns_table(metrics: Dict[str, Any]) -> Table:
     table.add_row("Average Daily Return", format_percentage(metrics.get('avg_return', 0) / 252))
     table.add_row("Annualized Volatility", format_percentage(metrics['volatility']))
     table.add_row("Sharpe Ratio", format_ratio(metrics['sharpe_ratio']))
+    table.add_row("Sortino Ratio", format_ratio(metrics.get('sortino_ratio', np.nan)))
     
     return table
 
@@ -235,7 +335,26 @@ def create_risk_table(metrics: Dict[str, Any]) -> Table:
     table.add_column("Value", justify="right")
     
     table.add_row("Max Drawdown", format_percentage(metrics['max_drawdown']))
+    var_val = metrics.get('value_at_risk', np.nan)
+    if not np.isnan(var_val):
+        table.add_row("VaR (95%, annualized)", Text(f"{var_val*100:.2f}%", style="bold yellow"))
     table.add_row("ROC (12-day)", format_percentage(metrics['roc']))
+    table.add_row("ATR (14)", format_price(metrics.get('atr', np.nan)))
+
+    beta_val = metrics.get('beta')
+    if beta_val is None or (isinstance(beta_val, float) and np.isnan(beta_val)):
+        table.add_row("Beta (vs benchmark)", Text("N/A", style="dim"))
+    else:
+        beta_color = "green" if 0.5 <= beta_val <= 1.5 else "red"
+        table.add_row("Beta (vs benchmark)", Text(f"{beta_val:.2f}", style=beta_color))
+
+    # RSI position gauge
+    rsi_val = metrics.get('rsi', np.nan)
+    if not np.isnan(rsi_val):
+        table.add_row(
+            "RSI position",
+            gauge_bar(rsi_val, 30, 70, width=12)
+        )
     
     # Risk score with color
     risk_score = metrics['risk_score']
@@ -248,6 +367,81 @@ def create_risk_table(metrics: Dict[str, Any]) -> Table:
     
     table.add_row("Risk Score", risk_text)
     
+    return table
+
+
+def create_trend_panel(metrics: Dict[str, Any]) -> Panel:
+    """
+    Create a Rich panel with a price sparkline and the trend regime.
+    
+    The last 60 closes are rendered as a sparkline, with 52-week (period)
+    high/low annotations and the golden/death cross status.
+
+    Args:
+        metrics: Dictionary containing metrics
+
+    Returns:
+        Rich Panel object
+    """
+    trend = metrics.get('trend', {}).get('prices', [])
+    
+    content = Text()
+    content.append("Price trend (last 60 sessions)\n", style="bold")
+    content.append(render_sparkline(trend, width=60))
+    content.append("\n\n", style="none")
+
+    cross = metrics.get('golden_cross', 'INSUFFICIENT DATA')
+    if cross == "GOLDEN CROSS":
+        cross_text = Text(f"{cross}", style="bold green")
+    elif cross == "DEATH CROSS":
+        cross_text = Text(f"{cross}", style="bold red")
+    elif cross == "BULLISH":
+        cross_text = Text("BULLISH (SMA-50 > SMA-200)", style="green")
+    elif cross == "BEARISH":
+        cross_text = Text("BEARISH (SMA-50 < SMA-200)", style="red")
+    else:
+        cross_text = Text("INSUFFICIENT DATA", style="yellow")
+    content.append("Market regime: ", style="bold")
+    content.append(cross_text)
+    content.append("\n")
+
+    high = metrics.get('trend', {}).get('high', np.nan)
+    low = metrics.get('trend', {}).get('low', np.nan)
+    content.append("Period high: ", style="bold")
+    content.append(f"${high:.2f}", style="cyan")
+    content.append("   Period low: ", style="bold")
+    content.append(f"${low:.2f}", style="cyan")
+    content.append("\n")
+
+    return Panel(
+        content,
+        title="TREND",
+        border_style="magenta",
+        box=box.ROUNDED
+    )
+
+
+def create_yearly_returns_table(metrics: Dict[str, Any]) -> Table:
+    """
+    Create a Rich table of calendar-year returns, color-coded.
+
+    Args:
+        metrics: Dictionary containing metrics
+
+    Returns:
+        Rich Table object
+    """
+    table = Table(title="Yearly Returns", box=box.ROUNDED, show_header=False, title_style="bold cyan")
+    table.add_column("Year", style="bold", width=12)
+    table.add_column("Return", justify="right")
+
+    yearly = metrics.get('yearly_returns', {})
+    for year in sorted(yearly.keys(), reverse=True):
+        table.add_row(Text(year, style="bold"), format_percentage(yearly[year]))
+
+    if not yearly:
+        table.add_row(Text("No full calendar years in period", style="dim"))
+        
     return table
 
 
@@ -289,6 +483,11 @@ def format_results(ticker: str, company_name: str, metrics: Dict[str, Any]) -> N
     console.print(info_panel)
     console.print()
     
+    # Trend sparkline panel
+    if metrics.get('trend', {}).get('prices'):
+        console.print(create_trend_panel(metrics))
+        console.print()
+    
     # Tables
     console.print(create_returns_table(metrics))
     console.print()
@@ -299,6 +498,8 @@ def format_results(ticker: str, company_name: str, metrics: Dict[str, Any]) -> N
     console.print(create_technical_table(metrics))
     console.print()
     console.print(create_risk_table(metrics))
+    console.print()
+    console.print(create_yearly_returns_table(metrics))
     console.print()
 
 
@@ -541,6 +742,9 @@ def export_to_dict(ticker: str, company_name: str, metrics: Dict[str, Any]) -> D
             'signal': metrics['signals'].get(window, None)
         }
 
+    beta_val = metrics.get('beta')
+    beta_export = None if beta_val is None or not np.isfinite(beta_val) else round_value(beta_val)
+
     return {
         'ticker': ticker.upper(),
         'company_name': company_name,
@@ -553,12 +757,21 @@ def export_to_dict(ticker: str, company_name: str, metrics: Dict[str, Any]) -> D
             'cumulative': round_value(metrics['cumulative_return']),
             'average_daily': round_value(metrics.get('avg_return', 0) / 252),
             'annualized_volatility': round_value(metrics['volatility']),
-            'sharpe_ratio': round_value(metrics['sharpe_ratio'])
+            'sharpe_ratio': round_value(metrics['sharpe_ratio']),
+            'sortino_ratio': round_value(metrics.get('sortino_ratio', np.nan))
         },
         'moving_averages': sma,
         'risk_metrics': {
             'max_drawdown': round_value(metrics['max_drawdown']),
+            'value_at_risk_95': round_value(metrics.get('value_at_risk', np.nan)),
+            'atr_14': round_value(metrics.get('atr', np.nan)),
+            'beta': beta_export,
             'roc_12d': round_value(metrics['roc']),
             'risk_score': metrics['risk_score']
+        },
+        'trend': {
+            'golden_cross': metrics.get('golden_cross', 'INSUFFICIENT DATA'),
+            'price_high': round_value(metrics.get('trend', {}).get('high', np.nan)),
+            'price_low': round_value(metrics.get('trend', {}).get('low', np.nan))
         }
     }

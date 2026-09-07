@@ -10,6 +10,7 @@ import argparse
 
 from .analysis import analyze_single_stock
 from .comparison import compare_stocks
+from .data_fetcher import fetch_benchmark_returns
 from .output import (
     format_results,
     format_comparison_results,
@@ -47,6 +48,7 @@ Examples:
   qfcli AAPL                    # Analyze Apple stock (1 year)
   qfcli MSFT --period 2y        # Analyze Microsoft (2 years)
   qfcli TSLA --rf 0.045         # Analyze Tesla with 4.5% risk-free rate
+  qfcli NVDA --benchmark SPY    # Beta vs S&P 500 ETF
   qfcli --compare AAPL MSFT     # Compare Apple vs Microsoft
   qfcli -c TSLA KO --period 6mo # Compare Tesla vs Coca-Cola (6 months)
   qfcli AAPL --json             # Machine-readable JSON output
@@ -84,6 +86,14 @@ Examples:
     )
 
     parser.add_argument(
+        '--benchmark',
+        type=str,
+        default=None,
+        metavar='SYMBOL',
+        help='Benchmark/index for beta (e.g., SPY, ^GSPC). Single-stock mode only.'
+    )
+
+    parser.add_argument(
         '--json',
         action='store_true',
         help='Emit results as JSON instead of rich tables'
@@ -92,7 +102,7 @@ Examples:
     return parser
 
 
-def analyze_with_progress(ticker: str, period: str, risk_free_rate: float):
+def analyze_with_progress(ticker: str, period: str, risk_free_rate: float, benchmark_returns=None):
     """Run a single-stock analysis behind a spinner."""
     with Progress(
         SpinnerColumn(),
@@ -101,7 +111,7 @@ def analyze_with_progress(ticker: str, period: str, risk_free_rate: float):
         transient=True,
     ) as progress:
         task = progress.add_task(f"[cyan]Analyzing {ticker.upper()}...", total=None)
-        return analyze_single_stock(ticker, period, risk_free_rate)
+        return analyze_single_stock(ticker, period, risk_free_rate, benchmark_returns)
 
 
 def emit_json(data) -> None:
@@ -141,12 +151,24 @@ def main() -> int:
         return 1
 
     if args.ticker:
+        if args.benchmark and args.ticker.upper() == args.benchmark.upper():
+            console.print("\n[bold red]Error:[/bold red] benchmark must differ from the analyzed ticker.\n")
+            return 1
+
         try:
+            benchmark_returns = None
+            if args.benchmark:
+                benchmark_returns = fetch_benchmark_returns(args.benchmark, args.period)
+
             if args.json:
-                result = analyze_single_stock(args.ticker, args.period, args.risk_free_rate)
+                result = analyze_single_stock(
+                    args.ticker, args.period, args.risk_free_rate, benchmark_returns
+                )
                 emit_json(export_to_dict(result['ticker'], result['company_name'], result))
             else:
-                result = analyze_with_progress(args.ticker, args.period, args.risk_free_rate)
+                result = analyze_with_progress(
+                    args.ticker, args.period, args.risk_free_rate, benchmark_returns
+                )
                 format_results(
                     result['ticker'],
                     result['company_name'],

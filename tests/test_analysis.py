@@ -36,11 +36,37 @@ class TestAnalyzeSingleStock:
         expected_keys = {
             'ticker', 'company_name', 'current_price', 'start_date', 'end_date',
             'cumulative_return', 'avg_return', 'volatility', 'sharpe_ratio',
-            'max_drawdown', 'sma_values', 'signals', 'bullish_count',
+            'sortino_ratio', 'value_at_risk', 'atr', 'max_drawdown',
+            'sma_values', 'signals', 'bullish_count',
             'total_signals', 'roc', 'risk_score', 'rsi', 'macd',
-            'bollinger_bands', 'daily_stats'
+            'golden_cross', 'yearly_returns', 'beta',
+            'bollinger_bands', 'daily_stats', 'trend'
         }
         assert expected_keys <= set(result.keys())
+
+    def test_trend_has_prices_and_bounds(self):
+        result = analysis.analyze_single_stock("TEST")
+        trend = result['trend']
+        assert len(trend['prices']) == 60
+        assert trend['high'] >= max(trend['prices'])
+        assert trend['low'] <= min(trend['prices'])
+
+    def test_beta_none_by_default(self):
+        assert analysis.analyze_single_stock("TEST")['beta'] is None
+
+    def test_beta_computed_with_benchmark(self):
+        import pandas as pd
+        rng = np.random.default_rng(1)
+        n = 260
+        idx = pd.date_range("2024-01-01", periods=n, freq="B")
+        # market series that mirrors the synthetic price's drift direction
+        benchmark = pd.Series(rng.normal(0.0002, 0.01, n), index=idx)
+        result = analysis.analyze_single_stock("TEST", benchmark_returns=benchmark)
+        assert result['beta'] is not None
+
+    def test_yearly_returns_is_dict(self):
+        yearly = analysis.analyze_single_stock("TEST")['yearly_returns']
+        assert isinstance(yearly, dict)
 
     def test_ticker_uppercased(self):
         assert analysis.analyze_single_stock("test")["ticker"] == "TEST"
