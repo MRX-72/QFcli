@@ -1,0 +1,116 @@
+"""Tests for the indicators module (no network required)."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from quant_finance.indicators import (
+    simple_moving_average,
+    moving_average_signals,
+    rate_of_change,
+    calculate_ema,
+    calculate_rsi,
+    calculate_macd,
+    bollinger_bands,
+    calculate_all_smas
+)
+
+
+def _series(values):
+    return pd.Series(values, dtype=float)
+
+
+class TestSimpleMovingAverage:
+    def test_matches_last_window(self):
+        s = _series([1, 2, 3, 4, 5])
+        assert simple_moving_average(s, 3) == 4.0  # (3+4+5)/3
+
+    def test_insufficient_data(self):
+        s = _series([1, 2])
+        assert np.isnan(simple_moving_average(s, 3))
+
+
+class TestMovingAverageSignals:
+    def test_bullish_and_bearish(self):
+        signals = moving_average_signals(current_price=110.0, sma_values={20: 105.0, 50: 115.0})
+        assert signals[20] == "BULLISH"
+        assert signals[50] == "BEARISH"
+
+    def test_insufficient_data_signal(self):
+        signals = moving_average_signals(current_price=10.0, sma_values={200: np.nan})
+        assert signals[200] == "INSUFFICIENT DATA"
+
+
+class TestRateOfChange:
+    def test_known_roc(self):
+        s = _series([100, 105, 110])  # period 1: (110-105)/105
+        assert rate_of_change(s, period=1) == pytest.approx((110 - 105) / 105)
+
+    def test_insufficient_data(self):
+        s = _series([1.0, 2.0])
+        assert np.isnan(rate_of_change(s, period=2))
+
+
+class TestEMA:
+    def test_constant_series(self):
+        s = _series([5.0, 5.0, 5.0, 5.0])
+        assert calculate_ema(s, 3) == pytest.approx(5.0)
+
+
+class TestRSI:
+    def test_uptrend_rsi_high(self):
+        s = _series(np.linspace(100, 200, 50))
+        assert calculate_rsi(s, period=14) > 90
+
+    def test_downtrend_rsi_low(self):
+        s = _series(np.linspace(200, 100, 50))
+        assert calculate_rsi(s, period=14) < 10
+
+    def test_flat_series_neutral(self):
+        s = _series(np.full(50, 100.0))
+        assert calculate_rsi(s, period=14) == 50.0
+
+    def test_all_gains_no_losses(self):
+        # strictly increasing => avg_loss == 0 => RSI 100
+        s = _series(np.arange(1.0, 30.0))
+        assert calculate_rsi(s, period=14) == 100.0
+
+
+class TestMACD:
+    def test_uptrend_histogram_shape(self):
+        s = _series(np.linspace(100, 200, 100))
+        macd = calculate_macd(s)
+        assert set(macd.keys()) == {'macd_line', 'signal_line', 'histogram'}
+        assert macd['histogram'] > 0
+
+    def test_constant_series_zero_macd(self):
+        s = _series(np.full(60, 50.0))
+        macd = calculate_macd(s)
+        assert macd['macd_line'] == pytest.approx(0.0, abs=1e-6)
+        assert macd['histogram'] == pytest.approx(0.0, abs=1e-6)
+
+
+class TestBollingerBands:
+    def test_constant_series_bands_touch_middle(self):
+        s = _series(np.full(50, 10.0))
+        bb = bollinger_bands(s)
+        assert bb['upper'] == pytest.approx(bb['middle'])
+        assert bb['lower'] == pytest.approx(bb['middle'])
+        assert bb['middle'] == pytest.approx(10.0)
+
+    def test_upper_above_lower(self):
+        s = _series(np.arange(1.0, 60.0))
+        bb = bollinger_bands(s)
+        assert bb['upper'] > bb['middle'] > bb['lower']
+
+
+class TestAllSmas:
+    def test_default_windows(self):
+        s = _series(np.arange(1.0, 250.0))
+        smas = calculate_all_smas(s)
+        assert set(smas.keys()) == {20, 50, 200}
+
+    def test_custom_windows(self):
+        s = _series(np.arange(1.0, 30.0))
+        smas = calculate_all_smas(s, windows=[5, 10])
+        assert set(smas.keys()) == {5, 10}

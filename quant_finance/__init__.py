@@ -1,10 +1,10 @@
 """
-Quant Finance Mini-Module
+Quant Finance Module
 A quantitative finance toolkit for stock analysis.
 """
 
-__version__ = "1.0.0"
-__author__ = "QFcli"
+__version__ = "1.1.0"
+__author__ = "MRX-72"
 
 from .data_fetcher import fetch_stock_data, calculate_daily_returns
 from .metrics import (
@@ -19,7 +19,8 @@ from .indicators import (
     moving_average_signals,
     rate_of_change
 )
-from .output import format_results, display_summary, format_comparison_results
+from .analysis import analyze_single_stock
+from .output import format_results, format_comparison_results
 from .comparison import compare_stocks
 
 __all__ = [
@@ -33,8 +34,8 @@ __all__ = [
     'simple_moving_average',
     'moving_average_signals',
     'rate_of_change',
+    'analyze_single_stock',
     'format_results',
-    'display_summary',
     'format_comparison_results',
     'compare_stocks'
 ]

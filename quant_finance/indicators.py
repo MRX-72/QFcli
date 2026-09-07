@@ -87,7 +87,7 @@ def rate_of_change(prices: Union[pd.Series, np.ndarray], period: int = 12) -> fl
 
 
 def calculate_all_smas(prices: Union[pd.Series, np.ndarray], 
-                       windows: list = [20, 50, 200]) -> Dict[int, float]:
+                       windows=None) -> Dict[int, float]:
     """
     Calculate multiple SMAs at once.
     
@@ -98,6 +98,9 @@ def calculate_all_smas(prices: Union[pd.Series, np.ndarray],
     Returns:
         Dictionary of {window: sma_value}
     """
+    if windows is None:
+        windows = [20, 50, 200]
+    
     sma_values = {}
     
     for window in windows:
@@ -183,10 +186,18 @@ def calculate_rsi(prices: Union[pd.Series, np.ndarray], period: int = 14) -> flo
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
+    avg_gain = gain.iloc[-1]
+    avg_loss = loss.iloc[-1]
     
-    return rsi.iloc[-1]
+    # Edge cases: a period with no losses is a pure run-up => RSI 100,
+    # and a period with no movement at all is neutral => RSI 50.
+    if np.isnan(avg_gain) or np.isnan(avg_loss):
+        return 50.0
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    
+    rs = avg_gain / avg_loss
+    return float(100 - (100 / (1 + rs)))
 
 
 def calculate_macd(prices: Union[pd.Series, np.ndarray], 

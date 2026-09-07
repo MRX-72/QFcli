@@ -139,9 +139,6 @@ def create_returns_table(metrics: Dict[str, Any]) -> Table:
     return table
 
 
-    return table
-
-
 def create_daily_stats_table(metrics: Dict[str, Any]) -> Table:
     """
     Create a Rich table for daily return statistics.
@@ -189,9 +186,6 @@ def create_ma_table(metrics: Dict[str, Any]) -> Table:
         else:
             table.add_row(f"SMA-{window}", Text("N/A", style="dim"), Text("INSUFFICIENT DATA", style="yellow"))
     
-    return table
-
-
     return table
 
 
@@ -303,6 +297,8 @@ def format_results(ticker: str, company_name: str, metrics: Dict[str, Any]) -> N
     console.print(create_ma_table(metrics))
     console.print()
     console.print(create_technical_table(metrics))
+    console.print()
+    console.print(create_risk_table(metrics))
     console.print()
 
 
@@ -520,18 +516,6 @@ def format_comparison_results(comparison: Dict[str, Any]) -> None:
     console.print()
 
 
-def display_summary(results: Any) -> None:
-    """
-    Print formatted summary to console.
-    This function is kept for backward compatibility but does nothing
-    since Rich formatting is now handled in format_results.
-    
-    Args:
-        results: Formatted results (unused with Rich)
-    """
-    pass  # Rich formatting is done in format_results/format_comparison_results
-
-
 def export_to_dict(ticker: str, company_name: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
     """
     Export results as a structured dictionary (useful for JSON export).
@@ -544,30 +528,37 @@ def export_to_dict(ticker: str, company_name: str, metrics: Dict[str, Any]) -> D
     Returns:
         Structured dictionary with all results
     """
+    def round_value(value, decimals: int = 4):
+        if value is None or (isinstance(value, float) and not np.isfinite(value)):
+            return None
+        return round(value, decimals)
+
+    sma = {}
+    for window in [20, 50, 200]:
+        raw = metrics['sma_values'].get(window, None)
+        sma[f'sma_{window}'] = {
+            'value': round_value(raw),
+            'signal': metrics['signals'].get(window, None)
+        }
+
     return {
         'ticker': ticker.upper(),
         'company_name': company_name,
-        'current_price': metrics['current_price'],
+        'current_price': round_value(metrics['current_price']),
         'data_period': {
             'start': metrics['start_date'],
             'end': metrics['end_date']
         },
         'returns': {
-            'cumulative': metrics['cumulative_return'],
-            'average_daily': metrics.get('avg_return', 0) / 252,
-            'annualized_volatility': metrics['volatility'],
-            'sharpe_ratio': metrics['sharpe_ratio']
+            'cumulative': round_value(metrics['cumulative_return']),
+            'average_daily': round_value(metrics.get('avg_return', 0) / 252),
+            'annualized_volatility': round_value(metrics['volatility']),
+            'sharpe_ratio': round_value(metrics['sharpe_ratio'])
         },
-        'moving_averages': {
-            f'sma_{window}': {
-                'value': metrics['sma_values'].get(window, None),
-                'signal': metrics['signals'].get(window, None)
-            }
-            for window in [20, 50, 200]
-        },
+        'moving_averages': sma,
         'risk_metrics': {
-            'max_drawdown': metrics['max_drawdown'],
-            'roc_12d': metrics['roc'],
+            'max_drawdown': round_value(metrics['max_drawdown']),
+            'roc_12d': round_value(metrics['roc']),
             'risk_score': metrics['risk_score']
         }
     }

@@ -1,181 +1,139 @@
-# Quant Finance CLI (QFcli)
+# QFcli
 
-![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+<div align="center">
 
-**QFcli** is a professional-grade, open-source command-line tool designed for quantitative stock analysis. It bridges the gap between complex financial data and accessible, readable insights. By leveraging real-time data and standard financial models, QFcli provides a comprehensive snapshot of any asset's performance, risk profile, and technical trends.
+[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Tests](https://github.com/MRX-72/QFcli/actions/workflows/ci.yml/badge.svg)](https://github.com/MRX-72/QFcli/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 
----
+</div>
 
-## 🚀 Key Features
+**QFcli** is a command-line tool for quantitative stock analysis. It pulls
+OHLCV data, computes return/risk metrics and technical indicators, and renders
+the results as readable terminal tables — or clean JSON for scripting.
 
-### 📊 Core Financial Analysis
-*   **Real-time Data**: Fetches the latest OHLCV (Open, High, Low, Close, Volume) data via `yfinance`.
-*   **Returns Analysis**: Computes Cumulative Return, Average Daily Return, and Annualized Volatility.
-*   **Risk-Adjusted Metrics**: Calculates the **Sharpe Ratio** to evaluate return per unit of risk.
-*   **Daily Performance Stats**: Identifying Best Day, Worst Day, and Win Ratio (consistency metric).
+Data comes live from Yahoo Finance via `yfinance`.
 
-### 📈 Technical Indicators (Algo-Trading Ready)
-*   **Moving Averages**:
-    *   **SMA (Simple Moving Average)**: 20-day (Short-term), 50-day (Medium-term), 200-day (Long-term).
-    *   **Trend Signals**: Automatically detects Golden Crosses or Death Crosses logic (Price > SMA = BULLISH).
-*   **Momentum & Volatility**:
-    *   **RSI (Relative Strength Index)**: 14-period momentum oscillator to spot overbought (>70) or oversold (<30) conditions.
-    *   **MACD (Moving Average Convergence Divergence)**: 12, 26, 9 standard setting. Used for trend-following and momentum.
-    *   **Bollinger Bands**: 20-period SMA ± 2 standard deviations. Measures volatility squeeze and breakouts.
+## Install
 
-### 🆚 Advanced Stock Comparison
-*   **Head-to-Head**: Compare any two assets (e.g., AAPL vs MSFT, BTC-USD vs ETH-USD).
-*   **Winner Determination**: Algorithmic scoring system that evaluates which asset wins on each metric.
-*   **Smart Recommendations**: Generates a final investment suggestion based on your risk profile (Growth vs. Stability).
+Requires Python 3.9+.
 
-### 🎨 Premium User Experience
-*   **Rich UI**: Beautiful terminal output with color-coded panels, tables, and progress bars.
-*   **Risk Scoring**: Auto-classifies assets as `HIGH RISK`, `MODERATE`, or `STABLE` based on annualized volatility.
-
----
-
-## 🛠️ Installation & Setup
-
-### Prerequisites
-*   **Python 3.8+**: Ensure you have Python installed (`python --version`).
-*   **pip**: Python package manager.
-
-### Step-by-Step Guide
-
-1.  **Clone the Repository**
-    ```bash
-    git clone https://github.com/MRX-72/QFcli.git
-    cd QFcli
-    ```
-
-2.  **Create a Virtual Environment (Highly Recommended)**
-    A virtual environment keeps your dependencies isolated.
-    *   **Windows**:
-        ```bash
-        python -m venv venv
-        .\venv\Scripts\activate
-        ```
-    *   **macOS / Linux**:
-        ```bash
-        python3 -m venv venv
-        source venv/bin/activate
-        ```
-
-3.  **Install Dependencies**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
----
-
-## 📖 Comprehensive User Guide
-
-### 1. Single Stock Analysis
-Get a deep-dive report on a single asset.
-
-**Syntax:** `python main.py [TICKER]`
-
-**Example:**
 ```bash
-python main.py NVDA
+git clone https://github.com/MRX-72/QFcli.git
+cd QFcli
+python3 -m venv venv && source venv/bin/activate
+pip install -e .            # provides the `qfcli` command
 ```
 
-**Customization Options:**
-*   `--period`: Change the lookback period. Default is `1y`.
-    *   *Valid Options*: `1d`, `5d`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `ytd`, `max`.
-    *   *Example*: `python main.py NVDA --period 5y`
-*   `--rf`: Set a Risk-Free Rate for Sharpe Ratio (e.g., 10-year Treasury yield). Default is `0.0`.
-    *   *Example*: `python main.py SPY --rf 0.045` (implies 4.5% risk-free rate)
+For development with tests:
 
-### 2. Stock Comparison
-Compare two assets to decide which fits your portfolio.
-
-**Syntax:** `python main.py --compare [TICKER1] [TICKER2]`
-
-**Example:**
 ```bash
-python main.py --compare GOOGL META
+pip install -e ".[dev]"
+pytest
 ```
 
----
-
-## 📸 Example Output
-
-### Single Stock Analysis
-Below is an actual output of the tool analyzing Apple Inc. (AAPL):
-
-![Single Stock Analysis Output](screenshots/demo_output.png)
-
-*(The screenshot above demonstrates the clean, tabulated view of Returns, Daily Stats, Moving Averages, Technicals, and Risk Metrics)*
-
----
-
-## 🧮 Technical Reference (Formulas & Logic)
-
-For the developers and quants, here is exactly how the metrics are calculated:
-
-### 1. Financial Metrics
-
-| Metric | Formula | Python Implementation |
-|--------|---------|-----------------------|
-| **Cumulative Return** | $R_{cum} = \frac{P_{end} - P_{start}}{P_{start}}$ | `(prices[-1] - prices[0]) / prices[0]` |
-| **Daily Returns** | $r_t = \frac{P_t - P_{t-1}}{P_{t-1}}$ | `prices.pct_change()` |
-| **Annualized Volatility** | $\sigma_{ann} = \sigma_{daily} \times \sqrt{252}$ | `returns.std() * np.sqrt(252)` |
-| **Sharpe Ratio** | $S = \frac{\bar{r} - r_f}{\sigma}$ | `(returns.mean() - daily_rf) / returns.std() * np.sqrt(252)` |
-| **Max Drawdown** | $MDD = \min(\frac{P_t - \max(P_{0..t})}{\max(P_{0..t})})$ | `min(drawdown)` where drawdown is calculated per peak |
-
-### 2. Technical Indicators
-
-| Indicator | Parameters | Formula / Logic |
-|-----------|------------|-----------------|
-| **SMA** | 20, 50, 200 | Simple average of the last $N$ closing prices. |
-| **RSI** | Period: 14 | $RSI = 100 - \frac{100}{1 + RS}$ where $RS = \frac{\text{Avg Gain}}{\text{Avg Loss}}$. |
-| **MACD** | 12, 26, 9 | **MACD Line**: $EMA_{12} - EMA_{26}$ <br> **Signal Line**: $EMA_9$ of MACD Line <br> **Histogram**: MACD - Signal |
-| **Bollinger Bands** | 20, 2 | **Middle**: $SMA_{20}$ <br> **Upper**: $SMA_{20} + (2 \times \sigma_{20})$ <br> **Lower**: $SMA_{20} - (2 \times \sigma_{20})$ |
-
-### 3. Risk Scoring Logic
-The **Risk Score** is determined by Annualized Volatility:
-*   🟢 **STABLE**: Volatility < 15%
-*   🟡 **MODERATE**: Volatility 15% - 30%
-*   🔴 **HIGH RISK**: Volatility > 30%
-
----
-
-## 📂 Project Structure
+## Usage
 
 ```
-QFcli/
-├── main.py                   # 🏁 Entry Point: Handles args and CLI flow
-├── requirements.txt          # 📦 Dependencies list
-├── README.md                 # 📄 This documentation
-└── quant_finance/            # 🧠 Core Package
-    ├── __init__.py           #    - Init file
-    ├── data_fetcher.py       #    - yfinance wrapper
-    ├── metrics.py            #    - Math: Sharpe, Volatility, Returns
-    ├── indicators.py         #    - Technicals: RSI, MACD, SMA, BB
-    ├── output.py             #    - UI: Rich tables and panels
-    └── comparison.py         #    - Logic: Comparing two stocks
+qfcli [TICKER]                Analyze a single stock
+qfcli --compare A B           Compare two stocks side-by-side
 ```
 
----
+### Single stock
 
-## 🤝 Contributing
+```bash
+qfcli NVDA                    # default period: 1y
+qfcli AAPL --period 5y        # 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
+qfcli SPY --rf 0.045          # risk-free rate for Sharpe ratio
+qfcli AAPL --json             # machine-readable JSON
+```
 
-We welcome contributions! Whether you're fixing a bug, adding a new indicator (e.g., Stochastic Oscillator, ATR), or improving documentation:
+### Comparison
 
-1.  Fork the repo.
-2.  Create a new branch (`git checkout -b feature/amazing-feature`).
-3.  Commit your changes.
-4.  Push to the branch.
-5.  Open a Pull Request.
+```bash
+qfcli --compare GOOGL META
+qfcli -c BTC-USD ETH-USD --period 6mo
+```
 
----
+### Options
 
-## 📄 License
+| Flag | Description |
+|------|-------------|
+| `-c, --compare T1 T2` | Compare two tickers |
+| `--period`            | Data period (default `1y`) |
+| `--rf RATE`           | Annual risk-free rate (default `0.0`) |
+| `--json`              | Emit machine-readable JSON |
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## Example output
 
----
+### Text
 
-**Made with ❤️ for quantitative finance enthusiasts**
+```
+Cumulative Return      +23.15%
+Annualized Volatility  +27.36%
+Sharpe Ratio              1.65
+Max Drawdown            -12.71%
+Risk Score              MODERATE
+```
+
+### JSON
+
+```json
+{
+  "ticker": "AAPL",
+  "company_name": "Apple Inc.",
+  "current_price": 319.97,
+  "returns": {
+    "cumulative": 0.0297,
+    "sharpe_ratio": 1.7429
+  },
+  "risk_metrics": {
+    "max_drawdown": -0.1271,
+    "risk_score": "MODERATE"
+  }
+}
+```
+
+## Metrics
+
+- **Returns**: cumulative return, average daily return, annualized volatility, Sharpe ratio, max drawdown, win ratio
+- **Technicals**: SMA (20/50/200), RSI-14, MACD (12,26,9), Bollinger Bands (20,2), rate of change (12-day)
+- **Signals**: price-vs-moving-average bullish/bearish labels; risk bucket derived from annualized volatility (<15% stable, 15–30% moderate, >30% high)
+
+See `quant_finance/metrics.py` and `quant_finance/indicators.py` for the exact
+formulas.
+
+## Development
+
+- `quant_finance/analysis.py` is the single source of truth for per-stock
+  analysis; both single-stock and comparison modes share it.
+- The `--json` path round-trips `export_to_dict`, which converts non-finite
+  floats to `null` so machine output is always valid JSON.
+- `pytest` covers the math layer (metrics, indicators), the comparison scoring,
+  and the JSON export using synthetic, deterministic data — the test suite runs
+  without network access.
+- CI runs the suite on macOS and Linux.
+
+## Project structure
+
+```
+quant_finance/
+  analysis.py       shared per-stock analysis logic
+  cli.py            argument parsing + CLI flow
+  comparison.py     head-to-head scoring and recommendations
+  data_fetcher.py   yfinance wrapper
+  indicators.py     SMA, EMA, RSI, MACD, Bollinger Bands
+  metrics.py        return/risk math
+  output.py         rich tables + JSON export
+tests/              offline pytest suite
+main.py             entry shim (python main.py == qfcli)
+```
+
+## Disclaimer
+
+For research and education. Nothing here is investment advice.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
