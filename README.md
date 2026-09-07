@@ -10,10 +10,13 @@
 </div>
 
 **QFcli** is a command-line tool for quantitative stock analysis. It pulls
-OHLCV data, computes return/risk metrics and technical indicators, and renders
-the results as readable terminal tables — or clean JSON for scripting.
+OHLCV data, computes return/risk metrics and technical indicators, runs
+single/multi-asset analyses plus simple backtests and portfolio optimization,
+and renders the results as readable terminal tables — or clean JSON for
+scripting.
 
-Data comes live from Yahoo Finance via `yfinance`.
+Data comes live from Yahoo Finance via `yfinance` and is cached on disk to
+avoid repeat downloads (disable with `--no-cache`).
 
 ## Install
 
@@ -38,6 +41,8 @@ pytest
 ```
 qfcli [TICKER]                Analyze a single stock
 qfcli --compare A B           Compare two stocks side-by-side
+qfcli --backtest TICKER -s sma_cross   Backtest a strategy
+qfcli --portfolio A B [C...]  Portfolio optimization + stress testing
 ```
 
 ### Single stock
@@ -48,6 +53,7 @@ qfcli AAPL --period 5y        # 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
 qfcli SPY --rf 0.045          # risk-free rate for Sharpe ratio
 qfcli NVDA --benchmark SPY    # beta vs S&P 500 ETF
 qfcli AAPL --json             # machine-readable JSON
+qfcli AAPL --no-cache         # bypass the on-disk cache, hit the network
 ```
 
 ### Comparison
@@ -57,11 +63,69 @@ qfcli --compare GOOGL META
 qfcli -c BTC-USD ETH-USD --period 6mo
 ```
 
+### Backtesting
+
+```bash
+qfcli --backtest NVDA -s sma_cross --cost 5 --slippage 5
+qfcli --backtest AAPL -s momentum --lookback 20 --hold 15
+qfcli --backtest MSFT -s rsi_reversion --json
+```
+
+Strategies (`-s/--strategy`):
+
+- `sma_cross` — long when the fast SMA is above the slow SMA (tunable
+  `--fast`/`--slow`).
+- `momentum` — enter on recent return strength, hold for a fixed window
+  (`--lookback`/`--hold`).
+- `rsi_reversion` — fade short-term overbought/oversold extremes.
+
+Signals are shifted one day forward (no lookahead). A transaction cost and
+slippage model (`--cost`/`--slippage`, basis points) is charged against traded
+turnover. Every run reports the same metrics for the buy-and-hold baseline.
+
+### Portfolio mode
+
+```bash
+qfcli --portfolio AAPL MSFT NVDA KO --period 2y
+qfcli --portfolio AAPL MSFT --period 1y --json
+```
+
+Given the historical daily returns, QFcli computes three weightings:
+
+- **Min variance** — the closed-form global minimum-variance portfolio
+  `S⁻¹1/(1'S⁻¹1)`.
+- **Tangency** — the maximum-Sharpe portfolio from sample statistics.
+- **Efficient** — a long-only tangency-style allocation via an iterative
+  optimizer (label: heuristic).
+
+It also prints portfolio expected return/volatility/Sharpe, a correlation
+heatmap, an estimated efficient-frontier risk range (sampled using a seeded
+Dirichlet draw — an approximate sketch, not an exhaustive frontier), and
+scenario stress tests (instant −10/−25/−50%, a −15% flash crash, and the worst
+30-day window).
+
+Note: asset selection is up to you — QFcli optimizes *weights* given the assets
+you pass in, and both min-variance and tangency portfolios can go short.
+
+### Statistics & simulation
+
+Every single-stock analysis now includes a **Statistics & Simulation** table:
+
+- **Monte Carlo 1-year forecast** (P5 / P50 / P95) via pathwise bootstrap of
+  historical returns (seeded, reproducible).
+- **Sharpe ratio 95% CI** from a percentile bootstrap.
+- **Sharpe significance** — the Jobson–Korkie z-test for the null that the
+  Sharpe is zero.
+- **Ljung-Box** test for serial autocorrelation in returns.
+- **Jarque-Bera** normality test.
+- **ADF** unit-root (stationarity) test.
+
 ### Terminal visuals
 
 The text output includes a few lightweight, dependency-free visualizations:
 
-- A **price sparkline** of the last 60 sessions, with per-bar up/down coloring.
+- A **price sparkline** of the last 60 sessions, with per-bar up/down coloring,
+  plus rolling-volatility and rolling-Sharpe sparklines in the trend panel.
 - A **trend regime panel** showing whether the 50-day average sits above or below
   the 200-day average (golden/death cross detection).
 - An **RSI position gauge** inside the risk table.
@@ -83,7 +147,18 @@ Period high: $332.12   Period low: $218.77
 | `--period`            | Data period (default `1y`) |
 | `--rf RATE`           | Annual risk-free rate (default `0.0`) |
 | `--benchmark SYMBOL`  | Benchmark/index for beta (e.g. `SPY`, `^GSPC`); single-stock mode only |
+| `--backtest TICKER`   | Run a strategy backtest on a ticker |
+| `-s, --strategy NAME` | Strategy to backtest (default `sma_cross`) |
+| `--cost BPS`          | Round-trip transaction cost in basis points (default `5`) |
+| `--slippage BPS`      | Slippage per trade in basis points (default `5`) |
+| `--fast N` / `--slow N` | SMA windows for `sma_cross` (defaults `20`/`50`) |
+| `--lookback N` / `--hold N` | Windows for `momentum` (defaults `20`/`20`) |
+| `--portfolio T1 T2 ...` | Portfolio mode: optimize a basket (min 2) |
+| `--no-cache`          | Bypass the on-disk data cache |
 | `--json`              | Emit machine-readable JSON |
+
+Caching: data is keyed by ticker+period and cached for 6 hours under
+`~/.qfcli/cache` (override with `QFCLI_CACHE_DIR` and `QFCLI_CACHE_TTL`).
 
 ## Example output
 
@@ -125,13 +200,16 @@ Risk Score              MODERATE
 
 ## Metrics
 
-- **Returns**: cumulative return, average daily return, annualized volatility, Sharpe ratio, **Sortino ratio**, max drawdown, win ratio, **VaR (95%, historical)**, **beta vs a chosen benchmark**
+- **Returns**: cumulative return, average daily return, annualized return (CAGR), annualized volatility, Sharpe ratio, **Sortino ratio**, max drawdown, win ratio, **VaR (95%, historical)**, **beta vs a chosen benchmark**, rolling volatility/Sharpe
 - **Technicals**: SMA (20/50/200), RSI-14, MACD (12,26,9), Bollinger Bands (20,2), rate of change (12-day), **ATR-14**, **golden/death cross detection**
 - **Signals**: price-vs-moving-average bullish/bearish labels; risk bucket derived from annualized volatility (<15% stable, 15–30% moderate, >30% high)
 - **Calendar**: per-year return breakdown
+- **Simulation & statistics**: Monte Carlo 1y forecast, Sharpe bootstrap CI, Jobson–Korkie Sharpe significance, Ljung-Box autocorrelation, Jarque-Bera normality, ADF stationarity, worst 30-day return
+- **Portfolio**: min-variance / tangency / efficient weights, correlation matrix, frontier sketch, scenario stress tests
 
-See `quant_finance/metrics.py` and `quant_finance/indicators.py` for the exact
-formulas.
+See `quant_finance/metrics.py`, `quant_finance/statistics.py`,
+`quant_finance/backtest.py`, and `quant_finance/portfolio.py` for the exact
+formulas and their documented assumptions.
 
 ## Development
 
@@ -140,8 +218,9 @@ formulas.
 - The `--json` path round-trips `export_to_dict`, which converts non-finite
   floats to `null` so machine output is always valid JSON.
 - `pytest` covers the math layer (metrics, indicators), the comparison scoring,
-  and the JSON export using synthetic, deterministic data — the test suite runs
-  without network access.
+  the backtester, portfolio closed forms, the statistics module, and the JSON
+  export using synthetic, deterministic data — the test suite runs without
+  network access.
 - CI runs the suite on macOS and Linux.
 
 ## Project structure
@@ -151,9 +230,12 @@ quant_finance/
   analysis.py       shared per-stock analysis logic
   cli.py            argument parsing + CLI flow
   comparison.py     head-to-head scoring and recommendations
-  data_fetcher.py   yfinance wrapper
+  data_fetcher.py   yfinance wrapper + on-disk cache
   indicators.py     SMA, EMA, RSI, MACD, Bollinger Bands
-  metrics.py        return/risk math
+  metrics.py        return/risk math + rolling + Monte Carlo
+  statistics.py     J-K Sharpe test, bootstrap, Ljung-Box, JB, ADF
+  backtest.py       vectorized strategy backtester
+  portfolio.py      min-variance/tangency/efficient + stress tests
   output.py         rich tables + JSON export
 tests/              offline pytest suite
 main.py             entry shim (python main.py == qfcli)

@@ -26,7 +26,12 @@ from .metrics import (
     sortino_ratio,
     value_at_risk,
     beta,
-    yearly_returns
+    yearly_returns,
+    rolling_volatility,
+    rolling_sharpe,
+    monte_carlo_forecast,
+    bootstrap_conf_interval,
+    worst_rolling_return
 )
 from .indicators import (
     calculate_all_smas,
@@ -38,13 +43,20 @@ from .indicators import (
     average_true_range,
     golden_death_cross
 )
+from .statistics import (
+    sharpe_significance,
+    sharpe_bootstrap_ci,
+    ljung_box,
+    jarque_bera
+)
 
 
 def analyze_single_stock(
     ticker: str,
     period: str = '1y',
     risk_free_rate: float = 0.0,
-    benchmark_returns: Optional[pd.Series] = None
+    benchmark_returns: Optional[pd.Series] = None,
+    use_cache: bool = True
 ) -> Dict:
     """
     Analyze a single stock and return a flat dictionary of every metric.
@@ -60,6 +72,7 @@ def analyze_single_stock(
         period: Historical data period
         risk_free_rate: Annual risk-free rate as decimal
         benchmark_returns: Optional Series of market returns to compute beta
+        use_cache: Use the on-disk data cache (default True)
 
     Returns:
         Flat dict of all computed metrics
@@ -67,7 +80,7 @@ def analyze_single_stock(
     Raises:
         ValueError: If data cannot be fetched or analyzed
     """
-    df, company_name = fetch_stock_data(ticker, period)
+    df, company_name = fetch_stock_data(ticker, period, use_cache=use_cache)
 
     prices = df['Close']
     current_price = get_current_price(df)
@@ -106,6 +119,16 @@ def analyze_single_stock(
         beta_est = beta(returns, benchmark_returns)
         beta_value = None if np.isnan(beta_est) else float(beta_est)
 
+    rolling_vol = rolling_volatility(returns, window=60)
+    rolling_sharpe_series = rolling_sharpe(returns, window=60, risk_free_rate=risk_free_rate)
+    mc = monte_carlo_forecast(returns, horizon=252, n_sims=2000)
+    sharpe_boot = sharpe_bootstrap_ci(returns, risk_free_rate=risk_free_rate, n_boot=2000)
+    sharpe_sig = sharpe_significance(returns, risk_free_rate=risk_free_rate)
+    lb = ljung_box(returns, lags=10)
+    jb = jarque_bera(returns)
+    returns_ci = bootstrap_conf_interval(returns.to_numpy(), n_boot=2000)
+    worst_30d = worst_rolling_return(returns, window=30)
+
     return {
         'ticker': ticker.upper(),
         'company_name': company_name,
@@ -133,9 +156,20 @@ def analyze_single_stock(
         'macd': macd_data,
         'bollinger_bands': bb_data,
         'daily_stats': daily_stats,
+        'rolling_volatility': rolling_vol,
+        'rolling_sharpe': rolling_sharpe_series,
+        'monte_carlo': mc,
+        'bootstrap_ci': returns_ci,
+        'sharpe_bootstrap': sharpe_boot,
+        'sharpe_significance': sharpe_sig,
+        'ljung_box': lb,
+        'jarque_bera': jb,
+        'stress_30d': worst_30d,
         'trend': {
             'prices': [round(float(p), 2) for p in prices.tail(60)],
             'high': float(prices.max()),
-            'low': float(prices.min())
+            'low': float(prices.min()),
+            'rolling_vol': [round(float(v), 4) for v in rolling_vol.dropna().tail(60)],
+            'rolling_sharpe': [round(float(v), 4) for v in rolling_sharpe_series.dropna().tail(60)]
         }
     }

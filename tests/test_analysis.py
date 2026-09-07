@@ -24,7 +24,7 @@ def _fake_df(n=260, start=100.0, drift=0.05):
 
 @pytest.fixture(autouse=True)
 def _mock_fetch(monkeypatch):
-    def fake_fetch(ticker, period="1y"):
+    def fake_fetch(ticker, period="1y", **kwargs):
         return _fake_df(), "FakeCorp Inc."
 
     monkeypatch.setattr(analysis, "fetch_stock_data", fake_fetch)
@@ -67,6 +67,22 @@ class TestAnalyzeSingleStock:
     def test_yearly_returns_is_dict(self):
         yearly = analysis.analyze_single_stock("TEST")['yearly_returns']
         assert isinstance(yearly, dict)
+
+    def test_monte_carlo_bounds(self):
+        mc = analysis.analyze_single_stock("TEST")['monte_carlo']
+        assert mc['p5'] <= mc['p50'] <= mc['p95']
+        assert mc['p50'] > 0
+
+    def test_statistical_tests_present(self):
+        result = analysis.analyze_single_stock("TEST")
+        assert {'statistic', 'p_value', 'verdict'} <= set(result['ljung_box'])
+        assert {'statistic', 'p_value', 'verdict'} <= set(result['jarque_bera'])
+        assert 'observed' in result['sharpe_bootstrap']
+
+    def test_rolling_series_in_trend(self):
+        trend = analysis.analyze_single_stock("TEST")['trend']
+        assert len(trend['rolling_vol']) > 0
+        assert len(trend['rolling_sharpe']) > 0
 
     def test_ticker_uppercased(self):
         assert analysis.analyze_single_stock("test")["ticker"] == "TEST"

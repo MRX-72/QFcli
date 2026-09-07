@@ -193,7 +193,8 @@ def generate_recommendation(stock1: Dict[str, Any], stock2: Dict[str, Any],
 
 
 def compare_stocks(ticker1: str, ticker2: str, period: str = '1y',
-                  risk_free_rate: float = 0.0) -> Optional[Dict[str, Any]]:
+                  risk_free_rate: float = 0.0,
+                  use_cache: bool = True) -> Optional[Dict[str, Any]]:
     """
     Compare two stocks across all metrics.
 
@@ -202,12 +203,13 @@ def compare_stocks(ticker1: str, ticker2: str, period: str = '1y',
         ticker2: Second stock ticker
         period: Historical data period
         risk_free_rate: Annual risk-free rate
+        use_cache: Use the on-disk data cache
 
     Returns:
         Dictionary with comparison results, or None if comparison fails
     """
-    stock1 = analyze_single_stock(ticker1, period, risk_free_rate)
-    stock2 = analyze_single_stock(ticker2, period, risk_free_rate)
+    stock1 = analyze_single_stock(ticker1, period, risk_free_rate, use_cache=use_cache)
+    stock2 = analyze_single_stock(ticker2, period, risk_free_rate, use_cache=use_cache)
 
     winners = determine_winners(stock1, stock2)
     recommendation = generate_recommendation(stock1, stock2, winners)

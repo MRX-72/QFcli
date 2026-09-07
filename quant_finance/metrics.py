@@ -166,6 +166,34 @@ def average_return(returns: pd.Series, annualize: bool = True) -> float:
     return avg_return
 
 
+def annual_return(equity_curve: Union[pd.Series, np.ndarray]) -> float:
+    """
+    Calculate annualized return (CAGR) from an equity curve.
+
+    Formula:
+        CAGR = (end / start) ** (252 / n_days) - 1
+
+    Args:
+        equity_curve: Series of cumulative wealth values (start ~ 1.0)
+
+    Returns:
+        Annualized return as a decimal
+    """
+    if isinstance(equity_curve, np.ndarray):
+        equity_curve = pd.Series(equity_curve)
+
+    clean = equity_curve.dropna()
+    if len(clean) < 2:
+        return 0.0
+
+    start, end = clean.iloc[0], clean.iloc[-1]
+    if start <= 0:
+        return 0.0
+
+    days = len(clean)
+    return (end / start) ** (252 / days) - 1
+
+
 def daily_return_stats(returns: pd.Series) -> Dict[str, float]:
     """
     Calculate statistics about daily returns.
@@ -322,3 +350,132 @@ def yearly_returns(prices: Union[pd.Series, np.ndarray]) -> Dict[str, float]:
             continue
         yearly[str(year)] = (p_end - p_start) / p_start
     return yearly
+
+
+def rolling_volatility(returns: pd.Series, window: int = 60, annualize: bool = True) -> pd.Series:
+    """
+    Rolling window realized volatility.
+
+    Args:
+        returns: Series of daily returns
+        window: Rolling window length (default: 60)
+        annualize: Scale each window by sqrt(252) (default: True)
+
+    Returns:
+        Series of rolling volatility (same index, NaN for warmup)
+    """
+    rv = returns.dropna().rolling(window=window).std(ddof=1)
+    return rv * np.sqrt(252) if annualize else rv
+
+
+def rolling_sharpe(returns: pd.Series, window: int = 60, risk_free_rate: float = 0.0) -> pd.Series:
+    """
+    Rolling window Sharpe ratio (annualized).
+
+    Args:
+        returns: Series of daily returns
+        window: Rolling window length (default: 60)
+        risk_free_rate: Annual risk-free rate as decimal
+
+    Returns:
+        Series of rolling Sharpe ratios
+    """
+    daily_rf = risk_free_rate / 252
+    roll = returns.dropna().rolling(window=window)
+    mean = roll.mean() - daily_rf
+    std = roll.std(ddof=1)
+    return (mean / std) * np.sqrt(252)
+
+
+def monte_carlo_forecast(
+    returns: pd.Series,
+    horizon: int = 252,
+    n_sims: int = 5000,
+    seed: int = 42
+) -> Dict[str, float]:
+    """
+    Bootstrap Monte Carlo forecast of total return over a horizon.
+
+    Daily returns are resampled with replacement (block of history drawn
+    pathwise), compounded forward for 'horizon' days. Report the P5/P50/P95
+    of the terminal wealth multiplier.
+
+    Args:
+        returns: Historical daily returns
+        horizon: Number of days to simulate (default: 252)
+        n_sims: Number of simulated paths (default: 5000)
+        seed: Deterministic RNG seed
+
+    Returns:
+        Dict with p5, p50, p95 (terminal wealth multipliers), n_sims
+    """
+    clean = returns.dropna().to_numpy()
+    if len(clean) < 30:
+        return {'p5': np.nan, 'p50': np.nan, 'p95': np.nan, 'n_sims': n_sims}
+
+    rng = np.random.default_rng(seed)
+    draws = rng.choice(clean, size=(n_sims, horizon), replace=True)
+    total = np.prod(1 + draws, axis=1)
+    p5, p50, p95 = np.percentile(total, [5, 50, 95])
+    return {
+        'p5': float(p5),
+        'p50': float(p50),
+        'p95': float(p95),
+        'n_sims': n_sims,
+    }
+
+
+def bootstrap_conf_interval(
+    sample: np.ndarray,
+    n_boot: int = 2000,
+    seed: int = 42,
+    confidence: float = 0.95
+) -> Dict[str, float]:
+    """
+    Percentile bootstrap confidence interval for an arbitrary sample statistic.
+
+    Args:
+        sample: Array of observations
+        n_boot: Number of resamples
+        seed: Deterministic RNG seed
+        confidence: Confidence level (default: 0.95)
+
+    Returns:
+        Dict with ci_low, ci_high, n_boot
+    """
+    sample = np.asarray(sample, dtype=float)
+    sample = sample[~np.isnan(sample)]
+    n = len(sample)
+    if n < 2:
+        return {'ci_low': np.nan, 'ci_high': np.nan, 'n_boot': n_boot}
+
+    rng = np.random.default_rng(seed)
+    means = np.empty(n_boot)
+    for i in range(n_boot):
+        means[i] = rng.choice(sample, size=n, replace=True).mean()
+
+    alpha = (1 - confidence) / 2
+    low, high = np.percentile(means, [alpha * 100, (1 - alpha) * 100])
+    return {'ci_low': float(low), 'ci_high': float(high), 'n_boot': n_boot}
+
+
+def worst_rolling_return(returns: pd.Series, window: int = 30) -> float:
+    """
+    Worst contiguous N-day cumulative return over the history.
+
+    Useful as an empirically-grounded stress scenario.
+
+    Args:
+        returns: Series of daily returns
+        window: Window length (default: 30)
+
+    Returns:
+        Most negative rolling N-day return (decimal)
+    """
+    clean = returns.dropna()
+    if len(clean) < window:
+        if clean.empty:
+            return 0.0
+        return float((1 + clean).prod() - 1)
+    roll = ((1 + clean).rolling(window).apply(np.prod, raw=True))
+    return float(roll.min())

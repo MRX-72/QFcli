@@ -413,6 +413,17 @@ def create_trend_panel(metrics: Dict[str, Any]) -> Panel:
     content.append(f"${low:.2f}", style="cyan")
     content.append("\n")
 
+    rolling_vol = metrics.get('trend', {}).get('rolling_vol', [])
+    rolling_sharpe = metrics.get('trend', {}).get('rolling_sharpe', [])
+    if rolling_vol:
+        content.append("Rolling 60d vol:\n", style="dim")
+        content.append(render_sparkline(rolling_vol, width=60))
+        content.append("\n")
+    if rolling_sharpe:
+        content.append("Rolling 60d Sharpe:\n", style="dim")
+        content.append(render_sparkline(rolling_sharpe, width=60))
+        content.append("\n")
+
     return Panel(
         content,
         title="TREND",
@@ -442,6 +453,52 @@ def create_yearly_returns_table(metrics: Dict[str, Any]) -> Table:
     if not yearly:
         table.add_row(Text("No full calendar years in period", style="dim"))
         
+    return table
+
+
+def create_statistics_table(metrics: Dict[str, Any]) -> Table:
+    """
+    Create a Rich table of statistical tests and simulations.
+
+    Args:
+        metrics: Dictionary containing metrics
+
+    Returns:
+        Rich Table object
+    """
+    table = Table(title="Statistics & Simulation", box=box.ROUNDED, show_header=False, title_style="bold cyan")
+    table.add_column("Metric", style="bold", width=34)
+    table.add_column("Value", justify="right")
+
+    mc = metrics.get('monte_carlo', {})
+    if mc.get('p50') is not None and not (isinstance(mc.get('p50'), float) and np.isnan(mc['p50'])):
+        table.add_row(
+            "Monte Carlo 1y (P5 / P50 / P95)",
+            Text(
+                f"{mc['p5']*100:+.1f}% / {mc['p50']*100:+.1f}% / {mc['p95']*100:+.1f}%",
+                style="yellow"
+            )
+        )
+
+    sb = metrics.get('sharpe_bootstrap', {})
+    if sb.get('observed') is not None and not np.isnan(sb['observed']):
+        table.add_row(
+            "Sharpe (bootstrap 95% CI)",
+            Text(f"{sb['observed']:.2f}  [{sb['ci_low']:.2f}, {sb['ci_high']:.2f}]", style="cyan")
+        )
+
+    for label, key, verdict_key in (
+        ('Sharpe significance (J-K)', 'sharpe_significance', 'verdict'),
+        ('Ljung-Box (10 lags)', 'ljung_box', 'verdict'),
+        ('Jarque-Bera normality', 'jarque_bera', 'verdict'),
+    ):
+        entry = metrics.get(key, {})
+        verdict = entry.get(verdict_key, 'INSUFFICIENT DATA')
+        color = "red" if 'SIGNIFICANT' in verdict or 'NOT NORMAL' in verdict or 'AUTOCORRELATED' in verdict else "green"
+        p = entry.get('p_value', np.nan)
+        p_str = "N/A" if np.isnan(p) else f"{p:.4f}"
+        table.add_row(f"{label}", Text(f"{verdict} (p={p_str})", style=color))
+
     return table
 
 
@@ -500,6 +557,8 @@ def format_results(ticker: str, company_name: str, metrics: Dict[str, Any]) -> N
     console.print(create_risk_table(metrics))
     console.print()
     console.print(create_yearly_returns_table(metrics))
+    console.print()
+    console.print(create_statistics_table(metrics))
     console.print()
 
 
@@ -745,6 +804,17 @@ def export_to_dict(ticker: str, company_name: str, metrics: Dict[str, Any]) -> D
     beta_val = metrics.get('beta')
     beta_export = None if beta_val is None or not np.isfinite(beta_val) else round_value(beta_val)
 
+    def _clean_stat(entry):
+        if not isinstance(entry, dict):
+            return None
+        stat = entry.get('statistic')
+        p = entry.get('p_value')
+        return {
+            'statistic': None if stat is None or np.isnan(stat) else round(stat, 4),
+            'p_value': None if p is None or np.isnan(p) else round(p, 4),
+            'verdict': entry.get('verdict'),
+        }
+
     return {
         'ticker': ticker.upper(),
         'company_name': company_name,
@@ -773,5 +843,194 @@ def export_to_dict(ticker: str, company_name: str, metrics: Dict[str, Any]) -> D
             'golden_cross': metrics.get('golden_cross', 'INSUFFICIENT DATA'),
             'price_high': round_value(metrics.get('trend', {}).get('high', np.nan)),
             'price_low': round_value(metrics.get('trend', {}).get('low', np.nan))
+        },
+        'simulation': {
+            'monte_carlo_1y': {
+                'p5': floor_mc(metrics, 'p5'),
+                'p50': floor_mc(metrics, 'p50'),
+                'p95': floor_mc(metrics, 'p95'),
+            },
+            'returns_ci': _round_stat(metrics.get('bootstrap_ci', {})),
+            'worst_30d_window': round_value(metrics.get('stress_30d', np.nan)),
+        },
+        'statistical_tests': {
+            'sharpe_bootstrap_ci': _round_stat(metrics.get('sharpe_bootstrap', {})),
+            'sharpe_significance': _clean_stat(metrics.get('sharpe_significance', {})),
+            'ljung_box': _clean_stat(metrics.get('ljung_box', {})),
+            'jarque_bera': _clean_stat(metrics.get('jarque_bera', {})),
         }
     }
+
+
+def floor_mc(metrics, key):
+    mc = metrics.get('monte_carlo', {})
+    val = mc.get(key, np.nan)
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    return round(float(val), 4)
+
+
+def _round_stat(entry):
+    if not isinstance(entry, dict):
+        return None
+    out = {}
+    for k, v in entry.items():
+        if isinstance(v, float) and np.isnan(v):
+            out[k] = None
+        elif isinstance(v, float):
+            out[k] = round(v, 4)
+        else:
+            out[k] = v
+    return out
+
+
+def format_backtest_results(result: Dict[str, Any], ticker: str, strategy_name: str) -> None:
+    """
+    Display formatted backtest results using Rich.
+
+    Args:
+        result: Flat dict from run_backtest() with strategy_*/baseline_* keys
+        ticker: Stock ticker symbol
+        strategy_name: Human-readable strategy label
+    """
+    table = Table(
+        title=f"{ticker.upper()} - {strategy_name} backtest",
+        box=box.DOUBLE_EDGE,
+        title_style="bold magenta",
+        show_lines=True
+    )
+    table.add_column("Metric", style="bold", width=30)
+    table.add_column("Strategy", justify="right", style="cyan")
+    table.add_column("Buy & Hold", justify="right", style="dim")
+
+    def _cell(v, fmt):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return Text("N/A")
+        return fmt(v)
+
+    _row = lambda label, skey, bkey, fmt: table.add_row(
+        label, _cell(result.get(skey), fmt), _cell(result.get(bkey), fmt))
+
+    _row("Total Return", 'strategy_total_return', 'baseline_total_return', format_percentage)
+    _row("Annualized Return", 'strategy_annual_return', 'baseline_annual_return', format_percentage)
+    _row("Volatility", 'strategy_volatility', 'baseline_volatility', format_percentage)
+    _row("Sharpe Ratio", 'strategy_sharpe', 'baseline_sharpe', format_ratio)
+    _row("Sortino Ratio", 'strategy_sortino', 'baseline_sortino', format_ratio)
+    _row("Max Drawdown", 'strategy_max_drawdown', 'baseline_max_drawdown', format_percentage)
+    _row("Win Ratio", 'strategy_win_ratio', 'baseline_win_ratio', format_percentage)
+    _row("Best Day", 'strategy_best_day', 'baseline_best_day', format_percentage)
+    _row("Worst Day", 'strategy_worst_day', 'baseline_worst_day', format_percentage)
+
+    stats_table = Table(title="Trading Stats", box=box.ROUNDED, show_header=False, title_style="bold yellow")
+    stats_table.add_column("Metric", style="bold", width=30)
+    stats_table.add_column("Value", justify="right")
+    stats_table.add_row("Trading Days", str(result.get('n_days', 'N/A')))
+    stats_table.add_row("Number of Trades", str(result.get('n_trades', 0)))
+    stats_table.add_row("Days in Market", format_percentage(result.get('days_in_market', 0.0)))
+    stats_table.add_row("Avg Daily Turnover", format_percentage(result.get('avg_daily_turnover', 0.0)))
+    stats_table.add_row("Total Transaction Cost", format_percentage(result.get('total_cost', 0.0)))
+
+    console.print()
+    console.print(table)
+    console.print()
+    console.print(stats_table)
+    console.print()
+
+
+def _cell_bg(value: float) -> str:
+    """Map correlation [-1,1] to a Rich background color."""
+    t = (value + 1) / 2
+    if t < 0.25:
+        return "red"
+    if t < 0.45:
+        return "yellow"
+    if t < 0.55:
+        return "white"
+    if t < 0.75:
+        return "green"
+    return "dark_green"
+
+
+def create_correlation_table(corr: pd.DataFrame) -> Table:
+    """
+    Build a terminal heatmap of the asset correlation matrix.
+
+    Args:
+        corr: Correlation DataFrame (columns = assets)
+
+    Returns:
+        Rich Table object with color-coded cells
+    """
+    table = Table(title="Correlation Matrix", box=box.SQUARE, title_style="bold cyan")
+    table.add_column("Asset", style="bold")
+    for col in corr.columns:
+        table.add_column(col, justify="center", style="bold")
+
+    for idx in corr.index:
+        row = [Text(idx, style="bold")]
+        for col in corr.columns:
+            val = corr.loc[idx, col]
+            cell = Text(f"{val:+.2f}", style="black on " + _cell_bg(val))
+            row.append(cell)
+        table.add_row(*row)
+
+    return table
+
+
+def format_portfolio_results(data: Dict[str, Any]) -> None:
+    """
+    Display formatted portfolio results using Rich.
+
+    Args:
+        data: Dictionary from build_portfolio_report()
+    """
+    console.print()
+
+    weights = data['weights']
+    weights_table = Table(title="Portfolio Weights", box=box.ROUNDED, show_lines=True,
+                          title_style="bold cyan")
+    weights_table.add_column("Strategy", style="bold", width=22)
+    for ticker in weights.columns:
+        weights_table.add_column(ticker, justify="right", style="cyan")
+
+    for strategy in weights.index:
+        if strategy in ('min_variance', 'tangency', 'efficient'):
+            weights_table.add_row(
+                Text(strategy.replace('_', ' ').title()),
+                *[Text(f"{w*100:.1f}%", style="white") for w in weights.loc[strategy]]
+            )
+    console.print(weights_table)
+    console.print()
+
+    # Portfolio stats
+    stats = data['stats']
+    stats_table = Table(title="Portfolio Characteristics", box=box.ROUNDED, show_header=False,
+                        title_style="bold yellow")
+    stats_table.add_column("Metric", style="bold", width=28)
+    stats_table.add_column("Value", justify="right")
+    for label, key, fmt in (('Expected Annual Return', 'expected_annual_return', format_percentage),
+                            ('Annualized Volatility', 'volatility', format_percentage),
+                            ('Sharpe Ratio', 'sharpe_ratio', format_ratio)):
+        stats_table.add_row(label, fmt(stats[key]))
+
+    if data.get('frontier_risk') is not None:
+        fr = data['frontier_risk']
+        stats_table.add_row("Frontier Risk Range", Text(f"{fr['min']:.1%} - {fr['max']:.1%}"))
+
+    console.print(stats_table)
+    console.print()
+
+    if data.get('correlation') is not None:
+        console.print(create_correlation_table(data['correlation']))
+        console.print()
+
+    stress = data.get('stress')
+    if stress:
+        stress_table = Table(title="Stress Scenarios", box=box.ROUNDED, show_header=False,
+                             title_style="bold red")
+        stress_table.add_column("Scenario", style="bold", width=28)
+        stress_table.add_column("Portfolio P&L", justify="right")
+        for name, value in stress.items():
+            stress_table.add_row(Text(name.replace('_', ' ')), format_percentage(value))
+        console.print(stress_table)
+        console.print()

@@ -83,6 +83,24 @@ class TestExportToDict:
         out = export_to_dict('AAPL', 'Apple Inc.', metrics)
         assert out['risk_metrics']['beta'] is None
 
+    def test_simulation_and_stat_tests_exported(self):
+        metrics = self._metrics()
+        metrics['bootstrap_ci'] = {'ci_low': 0.0001, 'ci_high': 0.001, 'n_boot': 2000}
+        mc = {'monte_carlo': {'p5': 0.5, 'p50': 1.1, 'p95': 1.9}}
+        metrics.update(mc)
+        metrics['stress_30d'] = -0.22
+        metrics['sharpe_bootstrap'] = {'observed': 1.2, 'ci_low': 0.5, 'ci_high': 1.9, 'n_boot': 2000}
+        metrics['ljung_box'] = {'statistic': 4.5, 'p_value': 0.5, 'verdict': 'NO AUTOCORRELATION'}
+        metrics['jarque_bera'] = {'statistic': 1.2, 'p_value': 0.4, 'verdict': 'NORMAL (cannot reject)'}
+        metrics['sharpe_significance'] = {'statistic': 2.1, 'p_value': 0.03, 'verdict': 'SIGNIFICANT'}
+
+        out = export_to_dict('AAPL', 'Apple Inc.', metrics)
+        assert out['simulation']['monte_carlo_1y']['p50'] == pytest.approx(1.1)
+        assert out['simulation']['worst_30d_window'] == pytest.approx(-0.22)
+        assert out['statistical_tests']['ljung_box']['verdict'] == 'NO AUTOCORRELATION'
+        assert out['statistical_tests']['sharpe_significance']['p_value'] == pytest.approx(0.03)
+        json.dumps(out)  # serializable
+
 
 class TestSparkline:
     def test_short_series_passthrough_length(self):
