@@ -9,14 +9,44 @@
 
 </div>
 
-**QFcli** is a command-line tool for quantitative stock analysis. It pulls
-OHLCV data, computes return/risk metrics and technical indicators, runs
-single/multi-asset analyses plus simple backtests and portfolio optimization,
-and renders the results as readable terminal tables — or clean JSON for
-scripting.
+> **_In one line:_** *Yahoo Finance data in, trustworthy numbers out — including the red flags when those numbers should not be trusted.*
+
+**QFcli** is a command-line research workbench for quantitative stock analysis.
+It pulls OHLCV data, computes return/risk metrics and technical indicators,
+runs single/multi-asset analyses plus backtests and portfolio optimization, and
+renders the results as readable terminal tables — or clean JSON for scripting.
+
+**At a glance:**
+
+- **Analyze** — any stock: returns, risk, drawdown, VaR, statistical tests, and a Monte Carlo forecast.
+- **Backtest** — strategies with *no lookahead*, realistic costs, position sizing, and out-of-sample parameter validation.
+- **Allocate** — min-variance, tangency, efficient, and Black-Litterman portfolios with shrinkage or PCA-factor covariance.
+- **Monitor** — paper-trades walk-forward-selected parameters day by day, with a stability filter, without placing orders.
+- **Stay honest** — the tool reports *insignificance*, *bias*, and *selection variance*, not just the flattering version of a result.
 
 Data comes live from Yahoo Finance via `yfinance` and is cached on disk to
 avoid repeat downloads (disable with `--no-cache`).
+
+## Who it's for — and why
+
+- **Self-taught investors and tinkerers** — to *learn* quant finance properly
+  without fooling yourself. The tool flags its own noise (insignificant Sharpe,
+  short-history confidence intervals), so you practice on realistic,
+  no-lookahead backtests instead of inflated "99% win rate" screenshots.
+- **Data / quant engineers building trading systems** — the math layer is
+  *clean, tested, pure-Python*, with documented formulas and no hidden
+  dependencies. Use it as a foundation, or as a reference implementation with a
+  textbook-grade audit trail.
+- **Analysts and researchers prototyping signals** — walk-forward validation,
+  ensemble blending, and the paper-trading harness form a small, *honest*
+  end-to-end loop: tune in sample, validate out of sample, monitor live.
+- **Finance students and educators** — Black-Litterman, shrinkage covariance,
+  PCA risk models, Fama-French betas, vol-management, and Kelly all working and
+  reproducible, with honest caveats about *where the math breaks down*.
+
+> *_Who it is **not** for:_* day-traders chasing signals, anyone expecting
+> miracle returns, or systems needing live order execution (the paper harness
+> explicitly does not place orders). Nothing here is investment advice.
 
 ## Install
 
@@ -310,15 +340,15 @@ Period high: $332.12   Period low: $218.77
 | `--ensemble NAME`           | OOS combination: `best`, `equal`, `rank`, `topk` (default `best`) |
 | `--topk N`                  | Top-k count for `--ensemble topk` (default: half the grid, min 2) |
 | `--paper-trade TICKER`      | Paper-trade a strategy day by day with walk-forward-selected params |
-| `--stable-days N`          | Paper trading: winning days required before the active config switches (default `1`)
+| `--stable-days N`       | Paper trading: winning days required before the active config switches (default `1`) |
 | `--portfolio T1 T2 ...` | Portfolio mode: optimize a basket (min 2) |
-| `--cov-method NAME`         | Covariance estimator: `sample`, `lw` (default), `factor` (PCA risk model) |
-| `--ff`              | Fama-French overlay: factor exposures, risk premia, and a factor prior for `--bl` |
-| `--bl`              | Add a Black-Litterman weight row in portfolio mode (prior + optional views) |
-| `--view K=RATE`     | Absolute expected-return view for Black-Litterman, e.g. `NVDA=0.18` (repeatable) |
-| `--view-confidence N` | Per-view error variance for Black-Litterman (default `0.0025`) |
-| `--no-cache`          | Bypass the on-disk data cache |
-| `--json`              | Emit machine-readable JSON |
+| `--cov-method NAME`     | Covariance estimator: `sample`, `lw` (default), `factor` (PCA risk model) |
+| `--ff`                  | Fama-French overlay: factor exposures, risk premia, and a factor prior for `--bl` |
+| `--bl`                  | Add a Black-Litterman weight row in portfolio mode (prior + optional views) |
+| `--view K=RATE`         | Absolute expected-return view for Black-Litterman, e.g. `NVDA=0.18` (repeatable) |
+| `--view-confidence N`   | Per-view error variance for Black-Litterman (default `0.0025`) |
+| `--no-cache`            | Bypass the on-disk data cache |
+| `--json`                | Emit machine-readable JSON |
 
 Caching: data is keyed by ticker+period and cached for 6 hours under
 `~/.qfcli/cache` (override with `QFCLI_CACHE_DIR` and `QFCLI_CACHE_TTL`).
