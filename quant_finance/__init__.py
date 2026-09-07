@@ -3,7 +3,7 @@ Quant Finance Module
 A quantitative finance toolkit for stock analysis.
 """
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __author__ = "MRX-72"
 
 from .data_fetcher import fetch_stock_data, calculate_daily_returns, fetch_benchmark_returns
@@ -50,7 +50,7 @@ from .statistics import (
     jarque_bera,
     adf_test
 )
-from .backtest import run_backtest, BUILTIN_STRATEGIES
+from .backtest import run_backtest, BUILTIN_STRATEGIES, load_custom_strategy, parse_strategy_params
 
 __all__ = [
     'fetch_stock_data',
@@ -93,5 +93,7 @@ __all__ = [
     'jarque_bera',
     'adf_test',
     'run_backtest',
-    'BUILTIN_STRATEGIES'
+    'BUILTIN_STRATEGIES',
+    'load_custom_strategy',
+    'parse_strategy_params'
 ]

@@ -92,6 +92,92 @@ BUILTIN_STRATEGIES: Dict[str, Callable] = {
 }
 
 
+def load_custom_strategy(path: str, func_name: str = 'custom_strategy') -> Callable:
+    """
+    Load a user-supplied strategy from a Python file.
+
+    The file must define a callable named ``func_name`` with the signature
+    ``fn(prices: pd.Series, **kwargs) -> pd.Series`` that returns a signal
+    series in -1..1 (positive = long, negative = short, 0 = flat).
+
+    Loading executes arbitrary Python, so only load files you trust.
+
+    Args:
+        path: Path to a .py file
+        func_name: Name of the strategy callable to import (default: custom_strategy)
+
+    Returns:
+        The strategy callable
+
+    Raises:
+        ValueError: if the file can't be loaded or the function is missing/not callable
+    """
+    import importlib.util
+    import pathlib
+    import sys
+
+    p = pathlib.Path(path).expanduser().resolve()
+    if not p.is_file():
+        raise ValueError(f"Strategy file not found: {path}")
+    if not p.suffix == '.py':
+        raise ValueError(f"Strategy file must be a .py file, got: {p.suffix or '(none)'}")
+
+    spec = importlib.util.spec_from_file_location(f"qfcli_custom_{p.stem}", p)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not create module spec for: {path}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        raise ValueError(f"Error executing strategy file {path}: {e}") from e
+    finally:
+        sys.modules.pop(f"qfcli_custom_{p.stem}", None)
+
+    fn = getattr(module, func_name, None)
+    if fn is None:
+        raise ValueError(
+            f"Strategy file must define a function named '{func_name}' "
+            f"receiving (prices, **kwargs) and returning a signal Series."
+        )
+    if not callable(fn):
+        raise ValueError(f"'{func_name}' in {path} is not callable.")
+    return fn
+
+
+def parse_strategy_params(pairs) -> Dict:
+    """
+    Parse ``key=value`` CLI tokens into a kwargs dict for a strategy.
+
+    Values are coerced to int/float/bool when possible, else kept as strings.
+    """
+    params: Dict = {}
+    for token in pairs:
+        if '=' not in token:
+            raise ValueError(f"Invalid strategy parameter '{token}' (expected key=value)")
+        key, _, raw = token.partition('=')
+        key = key.strip()
+        raw = raw.strip()
+        params[key] = _coerce_param(raw)
+    return params
+
+
+def _coerce_param(raw: str):
+    low = raw.lower()
+    if low == 'true':
+        return True
+    if low == 'false':
+        return False
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
 def run_backtest(
     prices: pd.Series,
     strategy: Callable,

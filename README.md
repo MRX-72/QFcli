@@ -69,6 +69,7 @@ qfcli -c BTC-USD ETH-USD --period 6mo
 qfcli --backtest NVDA -s sma_cross --cost 5 --slippage 5
 qfcli --backtest AAPL -s momentum --lookback 20 --hold 15
 qfcli --backtest MSFT -s rsi_reversion --json
+qfcli --backtest AAPL --strategy-file my_strat.py --strategy-param threshold=0.02
 ```
 
 Strategies (`-s/--strategy`):
@@ -82,6 +83,35 @@ Strategies (`-s/--strategy`):
 Signals are shifted one day forward (no lookahead). A transaction cost and
 slippage model (`--cost`/`--slippage`, basis points) is charged against traded
 turnover. Every run reports the same metrics for the buy-and-hold baseline.
+
+#### Custom strategies
+
+Pass any `.py` file with `--strategy-file`. The file must define a callable
+named `custom_strategy` that takes the price series plus optional kwargs and
+returns a signal `Series` in `-1..1` (positive = long, negative = short,
+`0` = flat):
+
+```python
+# my_strat.py
+import pandas as pd
+
+def custom_strategy(prices, threshold=0.02, **kwargs):
+    """Long for 10 days after a strong 5-day rally, otherwise flat."""
+    momentum = prices.pct_change(5).fillna(0.0)
+    signal = (momentum > threshold).astype(float)
+    return signal
+```
+
+Tune it from the command line without editing the file:
+
+```bash
+qfcli --backtest AAPL --strategy-file my_strat.py \
+      --strategy-param threshold=0.01 --strategy-param lookback=10 --cost 5
+```
+
+Values are coerced (`10` → int, `0.5` → float, `true`/`false` → bool, else
+string). Note: `--strategy-file` executes the file as Python, so only load
+strategies you trust.
 
 ### Portfolio mode
 
@@ -153,6 +183,8 @@ Period high: $332.12   Period low: $218.77
 | `--slippage BPS`      | Slippage per trade in basis points (default `5`) |
 | `--fast N` / `--slow N` | SMA windows for `sma_cross` (defaults `20`/`50`) |
 | `--lookback N` / `--hold N` | Windows for `momentum` (defaults `20`/`20`) |
+| `--strategy-file PATH`      | Load a custom strategy from a `.py` file (`custom_strategy(prices, **kwargs)`) |
+| `--strategy-param K=V`      | Pass a parameter to the strategy (repeatable) |
 | `--portfolio T1 T2 ...` | Portfolio mode: optimize a basket (min 2) |
 | `--no-cache`          | Bypass the on-disk data cache |
 | `--json`              | Emit machine-readable JSON |

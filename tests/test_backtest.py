@@ -8,6 +8,8 @@ from quant_finance.backtest import (
     run_backtest,
     BUILTIN_STRATEGIES,
     prepare_backtest_data,
+    load_custom_strategy,
+    parse_strategy_params,
 )
 
 
@@ -62,3 +64,59 @@ class TestPrepareBacktestData:
         df = pd.DataFrame({'Close': [1, 2, 3]})
         out = prepare_backtest_data(df)
         assert list(out) == [1, 2, 3]
+
+
+class TestLoadCustomStrategy:
+    def test_loads_valid_strategy(self, tmp_path):
+        f = tmp_path / "strat.py"
+        f.write_text(
+            "import pandas as pd\n"
+            "def custom_strategy(prices, threshold=0.5, **kwargs):\n"
+            "    return (prices.pct_change().fillna(0) > threshold).astype(float)\n"
+        )
+        fn = load_custom_strategy(str(f))
+        prices = _trend()
+        out = fn(prices, threshold=0.0)
+        assert isinstance(out, pd.Series)
+        assert out.index.equals(prices.index)
+
+    def test_missing_file_raises(self):
+        with pytest.raises(ValueError):
+            load_custom_strategy("/no/such/file.py")
+
+    def test_non_py_raises(self, tmp_path):
+        f = tmp_path / "strat.txt"
+        f.write_text("x = 1")
+        with pytest.raises(ValueError):
+            load_custom_strategy(str(f))
+
+    def test_missing_function_raises(self, tmp_path):
+        f = tmp_path / "nofn.py"
+        f.write_text("x = 1\n")
+        with pytest.raises(ValueError):
+            load_custom_strategy(str(f))
+
+    def test_not_callable_raises(self, tmp_path):
+        f = tmp_path / "notcall.py"
+        f.write_text("custom_strategy = 42\n")
+        with pytest.raises(ValueError):
+            load_custom_strategy(str(f))
+
+    def test_syntax_error_raises(self, tmp_path):
+        f = tmp_path / "badsyntax.py"
+        f.write_text("def custom_strategy(:\n")
+        with pytest.raises(ValueError):
+            load_custom_strategy(str(f))
+
+
+class TestParseStrategyParams:
+    def test_int_float_bool_string(self):
+        out = parse_strategy_params(['fast=10', 'pct=0.5', 'flag=true', 'name=trend'])
+        assert out == {'fast': 10, 'pct': 0.5, 'flag': True, 'name': 'trend'}
+
+    def test_no_equals_raises(self):
+        with pytest.raises(ValueError):
+            parse_strategy_params(['naked'])
+
+    def test_empty_returns_empty(self):
+        assert parse_strategy_params([]) == {}

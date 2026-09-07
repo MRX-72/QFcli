@@ -11,7 +11,13 @@ import argparse
 from .analysis import analyze_single_stock
 from .comparison import compare_stocks
 from .data_fetcher import fetch_stock_data, fetch_benchmark_returns
-from .backtest import BUILTIN_STRATEGIES, run_backtest, prepare_backtest_data
+from .backtest import (
+    BUILTIN_STRATEGIES,
+    run_backtest,
+    prepare_backtest_data,
+    load_custom_strategy,
+    parse_strategy_params,
+)
 from .portfolio import build_portfolio_report, returns_matrix
 from .output import (
     format_results,
@@ -58,6 +64,7 @@ Examples:
   qfcli -c TSLA KO --period 6mo # Compare Tesla vs Coca-Cola (6 months)
   qfcli AAPL --json             # Machine-readable JSON output
   qfcli --backtest AAPL -s sma_cross --cost 5     # Backtest a strategy
+  qfcli --backtest AAPL --strategy-file strat.py  # Backtest a custom strategy
   qfcli --portfolio AAPL MSFT NVDA KO --period 2y # Portfolio mode
         """
     )
@@ -128,6 +135,23 @@ Examples:
         type=float,
         default=5.0,
         help='Slippage per trade in basis points (default: 5)'
+    )
+
+    parser.add_argument(
+        '--strategy-file',
+        type=str,
+        default=None,
+        metavar='PATH',
+        help='Load a custom strategy from a .py file with a custom_strategy(prices, **kwargs) function'
+    )
+
+    parser.add_argument(
+        '--strategy-param',
+        type=str,
+        action='append',
+        default=None,
+        metavar='KEY=VALUE',
+        help='Extra key=value parameter passed to the strategy (repeatable)'
     )
 
     parser.add_argument(
@@ -221,25 +245,37 @@ def main() -> int:
         try:
             df, name = fetch_stock_data(ticker, args.period, use_cache=not args.no_cache)
             prices = prepare_backtest_data(df)
-            strategy = BUILTIN_STRATEGIES[args.strategy]
-            if args.strategy == 'sma_cross':
-                kwargs = {'fast': args.fast, 'slow': args.slow}
-            elif args.strategy == 'momentum':
-                kwargs = {'lookback': args.lookback, 'hold': args.hold}
+
+            extra_params = parse_strategy_params(args.strategy_param or [])
+
+            if args.strategy_file:
+                strategy = load_custom_strategy(args.strategy_file)
+                strategy_label = f"custom:{args.strategy_file}"
+                label = f"Custom Strategy ({args.strategy_file.rsplit('/', 1)[-1]})"
             else:
-                kwargs = {}
+                strategy_label = args.strategy
+                label = args.strategy
+                strategy = BUILTIN_STRATEGIES[args.strategy]
+                if args.strategy == 'sma_cross':
+                    extra_params.setdefault('fast', args.fast)
+                    extra_params.setdefault('slow', args.slow)
+                elif args.strategy == 'momentum':
+                    extra_params.setdefault('lookback', args.lookback)
+                    extra_params.setdefault('hold', args.hold)
+
             result = run_backtest(
                 prices,
                 strategy,
                 cost_bps=args.cost,
                 slippage_bps=args.slippage,
                 risk_free_rate=args.risk_free_rate,
-                **kwargs
+                **extra_params
             )
             if args.json:
+                result['strategy'] = {'label': strategy_label, 'params': extra_params}
                 emit_json(result)
             else:
-                format_backtest_results(result, ticker, args.strategy)
+                format_backtest_results(result, ticker, label)
         except ValueError as e:
             console.print(f"\n[bold red]Error:[/bold red] {e}\n")
             return 1
