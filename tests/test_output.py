@@ -14,6 +14,7 @@ from quant_finance.output import (
     create_correlation_table,
     format_backtest_results,
     format_walk_forward_results,
+    format_paper_trade_results,
 )
 
 import pandas as pd
@@ -245,3 +246,63 @@ class TestBacktestOutput:
         out = capsys.readouterr().out
         assert 'WALK-FORWARD' in out
         assert 'Per-Fold Detail' in out
+
+    def test_walk_forward_render_with_ensemble(self, capsys):
+        wf = {
+            'oos_total_return': 0.05, 'oos_annual_return': 0.04,
+            'oos_sharpe': 0.8, 'baseline_total_return': 0.09,
+            'baseline_annual_return': 0.07, 'alpha': 0.01,
+            'beta_to_baseline': 0.6, 'active_return': 0.005,
+            'information_ratio': 0.3, 'hit_rate': 0.5,
+            'oos_days': 150, 'n_folds': 2, 'fold_beat_rate': 0.5,
+            'selection_metric': 'sharpe', 'ensemble': 'rank',
+            'best_oos_total_return': 0.07, 'best_oos_annual_return': 0.06,
+            'folds': [
+                {'test_start': 0, 'test_end': 50, 'best_params': {'fast': 10, 'slow': 40},
+                 'n_params': 4, 'ensemble': 'rank',
+                 'oos_strategy_total_return': 0.02, 'oos_best_total_return': 0.03,
+                 'oos_baseline_total_return': 0.03, 'beat_baseline': False,
+                 'oos_n_days': 50},
+            ],
+        }
+        format_walk_forward_results(wf, 'AAPL', 'sma_cross')
+        out = capsys.readouterr().out
+        assert 'rank-weighted across grid' in out
+        assert 'Best config OOS return' in out
+
+    def test_paper_trade_render(self, capsys):
+        state = {
+            'start': '2023-01-01', 'end': '2023-12-31', 'n_days': 200,
+            'ensemble': 'rank', 'current_params': {'fast': 10, 'slow': 40},
+            'paper_total_return': 0.05, 'paper_annual_return': 0.04,
+            'paper_sharpe': 0.9, 'baseline_total_return': 0.10,
+            'baseline_annual_return': 0.09, 'alpha': 0.01,
+            'active_return': -0.005, 'information_ratio': -0.3,
+            'hit_rate': 0.45,
+            'param_selection_rate': {
+                '{"fast": 10, "slow": 40}': 0.8,
+                '{"fast": 20, "slow": 80}': 0.2,
+            },
+        }
+        format_paper_trade_results(state, None, 'AAPL', 'sma_cross')
+        out = capsys.readouterr().out
+        assert 'PAPER TRADING' in out
+        assert 'Config Selection Rate' in out
+        assert 'Paper Total Return' in out
+
+    def test_paper_trade_render_detects_param_change(self, capsys):
+        state = {
+            'start': '2023-01-01', 'end': '2023-12-31', 'n_days': 200,
+            'ensemble': 'best', 'current_params': {'fast': 20, 'slow': 80},
+            'paper_total_return': 0.05, 'paper_annual_return': 0.04,
+            'paper_sharpe': 0.9, 'baseline_total_return': 0.10,
+            'baseline_annual_return': 0.09, 'alpha': 0.01,
+            'active_return': -0.005, 'information_ratio': -0.3,
+            'hit_rate': 0.45, 'param_selection_rate': {},
+        }
+        previous = dict(state)
+        previous['current_params'] = {'fast': 10, 'slow': 40}
+        format_paper_trade_results(state, previous, 'AAPL', 'sma_cross')
+        out = capsys.readouterr().out
+        assert 'changed since last' in out
+        assert 'fast=20, slow=80' in out

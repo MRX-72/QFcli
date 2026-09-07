@@ -123,6 +123,35 @@ daily returns are stitched into a single equity curve and evaluated against
 buy-and-hold (alpha, hit rate, information ratio, fold-by-fold detail). Note:
 parameters not listed in the grid keep the strategy's defaults.
 
+By default the single best grid point (by training Sharpe) is run out of
+sample. `--ensemble` instead blends every grid point's OOS returns, which is
+significantly more robust than betting on one winner:
+
+- `equal` averages all configs (lowest selection variance),
+- `rank` weights each config by its training-score rank (ties averaged),
+- `topk` averages the top-k configs (`--topk`, default half the grid).
+
+Blends never add alpha the individual configs don't have — they only reduce
+the variance of *parameter selection*. The returns only the best config would
+have produced are still reported (`best_oos_total_return` in JSON, "Best config
+OOS return" in text) so the two can be compared honestly.
+
+#### Paper trading (monitoring)
+
+```bash
+qfcli --paper-trade AAPL -s sma_cross --grid "fast=10,20;slow=40,60" --ensemble rank
+```
+
+Replays, day by day, what walk-forward-chosen parameters *would* have traded:
+each morning the best (or blended) configuration is selected on the data
+available up to the prior close and the resulting position takes that day's
+return — the same costs and no-lookahead rules as the backtester. State is
+persisted under `~/.qfcli/paper/` (override with `QFCLI_PAPER_DIR`), and the
+report shows the paper equity vs buy-and-hold, alpha / hit rate / information
+ratio, which configs kept winning, and whether the current parameters changed
+since the last run. Run it repeatedly as new bars arrive to extend the paper
+history. It is a *monitoring* harness — it does not place orders.
+
 #### Custom strategies
 
 Pass any `.py` file with `--strategy-file`. The file must define a callable
@@ -174,13 +203,28 @@ request) a Black-Litterman allocation:
   return for NVDA). Per-view error variance defaults to 0.0025
   (`--view-confidence` to override); without views the posterior equals the
   prior and reproduces the reference weights, so views are the only source of
-  tilt.
+  tilt (unless `--ff` supplies an alternative factor-model prior, see below).
 
 Covariance estimation defaults to **Ledoit-Wolf style shrinkage** toward a
 constant-correlation target, which keeps the closed-form inverse well
 conditioned (the classic fix for short, correlated histories). Diagnostics are
 reported honestly: great-looking tangency weights with extreme short positions
 read as estimation noise, not opportunity.
+
+`--cov-method factor` swaps in a **PCA risk model**: a low-rank decomposition
+of the asset correlation matrix into a few latent factors plus an
+idiosyncratic diagonal, so the covariance is *structural* rather than noisy
+(the risk model also shows explained variance and per-asset idiosyncratic
+volatility). Honest caveat: PCA factors are atheoretical — they describe common
+*variance*, not economic drivers.
+
+`--ff` layers the **Fama-French overlay** on top (downloads the daily market /
+size / value research factors from the Ken French Data Library, cached like
+stock data): per-asset OLS factor exposures and annualized risk premia, and —
+combined with `--bl` — a factor-model expected-return **prior** that replaces
+the reverse-optimized prior (the reference-weight reproduction property then
+no longer holds; the prior itself tilts). If the download fails, the CLI warns
+and proceeds without the overlay rather than failing the whole run.
 
 It also prints portfolio expected return/volatility/Sharpe, a correlation
 heatmap, an estimated efficient-frontier risk range (sampled using a seeded
@@ -248,7 +292,12 @@ Period high: $332.12   Period low: $218.77
 | `--grid SPEC`               | Param grid for `--walk-forward`, cartesian (`"fast=10,20;slow=40,80"`) |
 | `--train-frac N`            | Initial in-sample fraction for `--walk-forward` (default `0.6`) |
 | `--wf-step N`               | Days added per walk-forward fold (default `63`) |
+| `--ensemble NAME`           | OOS combination: `best`, `equal`, `rank`, `topk` (default `best`) |
+| `--topk N`                  | Top-k count for `--ensemble topk` (default: half the grid, min 2) |
+| `--paper-trade TICKER`      | Paper-trade a strategy day by day with walk-forward-selected params |
 | `--portfolio T1 T2 ...` | Portfolio mode: optimize a basket (min 2) |
+| `--cov-method NAME`         | Covariance estimator: `sample`, `lw` (default), `factor` (PCA risk model) |
+| `--ff`              | Fama-French overlay: factor exposures, risk premia, and a factor prior for `--bl` |
 | `--bl`              | Add a Black-Litterman weight row in portfolio mode (prior + optional views) |
 | `--view K=RATE`     | Absolute expected-return view for Black-Litterman, e.g. `NVDA=0.18` (repeatable) |
 | `--view-confidence N` | Per-view error variance for Black-Litterman (default `0.0025`) |
@@ -304,8 +353,8 @@ Risk Score              MODERATE
 - **Calendar**: per-year return breakdown
 - **Simulation & statistics**: Monte Carlo 1y forecast, Sharpe bootstrap CI, Jobson–Korkie Sharpe significance, Ljung-Box autocorrelation, Jarque-Bera normality, ADF stationarity, worst 30-day return
 - **Benchmark-adjusted**: backtest alpha, beta-to-baseline, active return, information ratio, daily hit rate vs buy-and-hold
-- **Portfolio**: min-variance / tangency / efficient / Black-Litterman weights, Ledoit-Wolf shrinkage covariance, correlation matrix, frontier sketch, scenario stress tests
-- **Backtesting extras**: position sizing (target-vol, fractional Kelly), walk-forward out-of-sample validation with a parameter grid
+- **Portfolio**: min-variance / tangency / efficient / Black-Litterman weights, Ledoit-Wolf shrinkage + PCA-factor covariance, correlation matrix, frontier sketch, scenario stress tests
+- **Backtesting extras**: position sizing (target-vol, fractional Kelly), walk-forward out-of-sample validation with a parameter grid, ensemble OOS combinations (equal/rank/topk), Fama-French overlay, day-by-day paper trading
 
 See `quant_finance/metrics.py`, `quant_finance/statistics.py`,
 `quant_finance/backtest.py`, and `quant_finance/portfolio.py` for the exact
@@ -318,7 +367,8 @@ formulas and their documented assumptions.
 - The `--json` path round-trips `export_to_dict`, which converts non-finite
   floats to `null` so machine output is always valid JSON.
 - `pytest` covers the math layer (metrics, indicators, shrinkage covariance,
-  Black-Litterman, position sizing, walk-forward), the comparison scoring,
+  Black-Litterman, PCA risk model, position sizing, walk-forward, ensemble
+  blending, paper trading, Fama-French parsing), the comparison scoring,
   the backtester, portfolio closed forms, the statistics module, and the JSON
   export using synthetic, deterministic data — the test suite runs without
   network access.
@@ -335,8 +385,10 @@ quant_finance/
   indicators.py     SMA, EMA, RSI, MACD, Bollinger Bands
   metrics.py        return/risk math + rolling + Monte Carlo
   statistics.py     J-K Sharpe test, bootstrap, Ljung-Box, JB, ADF
-  backtest.py       vectorized backtester + position sizing + walk-forward
-  portfolio.py      min-variance/tangency/efficient/BL + shrinkage cov + stress
+  backtest.py       vectorized backtester + position sizing + walk-forward (ensembles)
+  portfolio.py      min-variance/tangency/efficient/BL + shrinkage/PCA cov + stress
+  factor_model.py   PCA risk model + Fama-French overlay (fetch/betas/premia)
+  paper_trade.py    day-by-day paper-trading harness with persisted state
   output.py         rich tables + JSON export
 tests/              offline pytest suite
 main.py             entry shim (python main.py == qfcli)

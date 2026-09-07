@@ -247,3 +247,78 @@ class TestReport:
         df = _returns().iloc[:, :1]
         with pytest.raises(ValueError):
             build_portfolio_report(df)
+
+
+class TestFactorCovariance:
+    def test_factor_covariance_psd(self):
+        df = _returns(n=500)
+        cov = covariance_estimator(df, method='factor')
+        eig = np.linalg.eigvalsh(cov.to_numpy())
+        assert eig.min() >= -1e-9
+
+    def test_factor_covariance_finite_aligned(self):
+        df = _returns(n=400)
+        cov = covariance_estimator(df, method='factor')
+        assert cov.index.equals(df.columns)
+        assert np.isfinite(cov.to_numpy()).all()
+
+    def test_factor_covariance_reduced_rank_common(self):
+        df = _returns(n=400)
+        cov1 = covariance_estimator(df, method='factor', n_factors=1)
+        cov3 = covariance_estimator(df, method='factor', n_factors=3)
+        # more factors -> richer (closer-to-sample) estimate
+        assert np.linalg.norm(cov3.to_numpy() - df.cov().to_numpy()) <= \
+            np.linalg.norm(cov1.to_numpy() - df.cov().to_numpy()) + 1e-9
+
+    def test_optimizers_accept_factor_method(self):
+        df = _returns(n=500, seed=3)
+        w_min = min_variance(df, method='factor')
+        w_tan = tangency_portfolio(df, method='factor')
+        assert w_min.sum() == pytest.approx(1.0, abs=1e-9)
+        assert w_tan.sum() == pytest.approx(1.0, abs=1e-9)
+
+    def test_unknown_method_raises_message_lists_factor(self):
+        df = _returns()
+        with pytest.raises(ValueError, match='factor'):
+            covariance_estimator(df, method='bogus')
+
+
+class TestPriorReturns:
+    def test_custom_prior_replaces_implied_no_views(self):
+        df = _returns(n=300, seed=5)
+        prior = pd.Series({'A': 0.10, 'B': 0.05, 'C': 0.02})
+        bl = black_litterman(df, prior_returns=prior, prior_label='ff')
+        # no views -> posterior equals the supplied prior
+        assert bl['prior_returns'].equals(prior)
+        assert bl['posterior_returns'].equals(prior)
+        assert bl['implied_returns'].index.equals(prior.index)
+        assert not bl['implied_returns'].equals(prior)   # implied differs
+        assert bl['prior_label'] == 'ff'
+        assert bl['weights'].sum() == pytest.approx(1.0, abs=1e-9)
+
+    def test_custom_prior_with_views_still_blends(self):
+        df = _returns(n=300, seed=6)
+        prior = pd.Series({'A': 0.03, 'B': 0.03, 'C': 0.03})
+        bl = black_litterman(df, prior_returns=prior, views={'A': 0.06},
+                             view_confidence=1e-4)
+        assert bl['posterior_returns']['A'] > prior['A']
+        assert bl['weights'].sum() == pytest.approx(1.0, abs=1e-9)
+
+    def test_report_factor_panel(self):
+        df = _returns(n=400)
+        report = build_portfolio_report(df, cov_method='factor')
+        assert report['cov_method'] == 'factor'
+        assert report['factor_model']['n_factors'] >= 1
+        assert 'idiosyncratic_std' in report['factor_model']
+
+    def test_report_bl_prior_detail(self):
+        df = _returns(n=300)
+        import pandas as pd
+        prior = pd.Series({'A': 0.06, 'B': 0.04, 'C': 0.02})
+        bl = black_litterman(df, prior_returns=prior, prior_label='ff')
+        report = build_portfolio_report(df, bl=bl)
+        assert report['bl']['prior_label'] == 'ff'
+        assert set(report['bl'].keys()) == {
+            'implied_returns', 'prior_returns', 'prior_label',
+            'posterior_returns', 'prior_weights',
+        }

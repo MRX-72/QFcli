@@ -3,7 +3,7 @@ Quant Finance Module
 A quantitative finance toolkit for stock analysis.
 """
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __author__ = "MRX-72"
 
 from .data_fetcher import fetch_stock_data, calculate_daily_returns, fetch_benchmark_returns
@@ -65,6 +65,16 @@ from .backtest import (
     parse_param_grid,
     walk_forward,
 )
+from .factor_model import (
+    pca_factor_model,
+    factor_model_cov,
+    parse_ff_csv,
+    fetch_ff_factors,
+    ff_betas,
+    factor_premia,
+    ff_expected_returns,
+)
+from .paper_trade import paper_trade, save_paper_state, load_paper_state, paper_state_path
 
 __all__ = [
     'fetch_stock_data',
@@ -118,5 +128,16 @@ __all__ = [
     'parse_strategy_params',
     'size_position',
     'parse_param_grid',
-    'walk_forward'
+    'walk_forward',
+    'pca_factor_model',
+    'factor_model_cov',
+    'parse_ff_csv',
+    'fetch_ff_factors',
+    'ff_betas',
+    'factor_premia',
+    'ff_expected_returns',
+    'paper_trade',
+    'save_paper_state',
+    'load_paper_state',
+    'paper_state_path',
 ]

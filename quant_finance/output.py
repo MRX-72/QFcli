@@ -4,6 +4,7 @@ Format and display analysis results using Rich library for beautiful CLI output.
 """
 
 from typing import Dict, Any
+import json
 import numpy as np
 import pandas as pd
 from rich.console import Console
@@ -1018,6 +1019,20 @@ def format_walk_forward_results(result: Dict[str, Any], ticker: str, strategy_na
         Text(f"{result.get('fold_beat_rate', float('nan')) * 100:.0f}%", style="cyan")
     )
     table.add_row("Selection Metric", Text(str(result.get('selection_metric', 'sharpe')), style="yellow"))
+
+    ensemble = result.get('ensemble', 'best')
+    ensemble_text = {
+        'best': "best single config",
+        'equal': "equal weights across grid",
+        'rank': "rank-weighted across grid",
+        'topk': "top-k average across grid",
+    }.get(ensemble, ensemble)
+    table.add_row("OOS Combination", Text(str(ensemble_text), style="magenta"))
+    if ensemble != 'best' and 'best_oos_total_return' in result:
+        table.add_row(
+            "Best config OOS return (ref)",
+            format_percentage(result.get('best_oos_total_return', np.nan))
+        )
     console.print(table)
     console.print()
 
@@ -1119,18 +1134,70 @@ def format_portfolio_results(data: Dict[str, Any]) -> None:
 
     bl = data.get('bl')
     if bl:
-        bl_table = Table(title="Black-Litterman Expected Returns", box=box.ROUNDED,
+        prior_label = bl.get('prior_label', 'implied')
+        title = "Black-Litterman Expected Returns"
+        if prior_label == 'ff':
+            title += " (prior: Fama-French factor model)"
+        bl_show_implied = prior_label != 'implied'
+        bl_table = Table(title=title, box=box.ROUNDED,
                          title_style="bold magenta")
         bl_table.add_column("Asset", style="bold")
-        bl_table.add_column("Implied (prior)", justify="right")
+        if bl_show_implied:
+            bl_table.add_column("Implied (reverse-opt)", justify="right")
+        bl_table.add_column("Prior", justify="right")
         bl_table.add_column("Posterior", justify="right")
-        for asset in bl['implied_returns']:
-            bl_table.add_row(
-                Text(asset, style="bold"),
-                format_percentage(bl['implied_returns'][asset], colored=True),
-                format_percentage(bl['posterior_returns'][asset], colored=True),
-            )
+        for asset in bl['prior_returns']:
+            row = [Text(asset, style="bold")]
+            if bl_show_implied:
+                row.append(format_percentage(bl['implied_returns'][asset], colored=True))
+            row.append(format_percentage(bl['prior_returns'][asset], colored=True))
+            row.append(format_percentage(bl['posterior_returns'][asset], colored=True))
+            bl_table.add_row(*row)
         console.print(bl_table)
+        console.print()
+
+    ff = data.get('ff')
+    if ff:
+        columns = list(ff['betas'].keys())
+        ff_table = Table(title="Fama-French Factor Exposures (daily OLS betas)",
+                         box=box.ROUNDED, title_style="bold yellow")
+        ff_table.add_column("Asset", style="bold")
+        for c in columns:
+            ff_table.add_column(c, justify="right")
+        ff_table.add_column("Alpha (ann.)", justify="right")
+        for asset in data['tickers']:
+            row = [Text(asset, style="bold")]
+            for c in columns:
+                v = ff['betas'][c].get(asset)
+                row.append(Text("N/A", style="dim") if v is None else Text(f"{v:.2f}"))
+            alpha = ff['alpha_annual'].get(asset, np.nan)
+            row.append(format_percentage(alpha))
+            ff_table.add_row(*row)
+        console.print(ff_table)
+        console.print()
+        if ff.get('premia'):
+            premia_table = Table(title="Factor Premia (annualized)", box=box.ROUNDED,
+                                 show_header=False, title_style="bold yellow")
+            premia_table.add_column("Factor", style="bold")
+            premia_table.add_column("Premia", justify="right")
+            for f, v in ff['premia'].items():
+                premia_table.add_row(Text(f, style="bold"), format_percentage(v))
+            console.print(premia_table)
+            console.print()
+
+    fm = data.get('factor_model')
+    if fm:
+        fm_table = Table(title="PCA Risk Model", box=box.ROUNDED, show_header=False,
+                         title_style="bold cyan")
+        fm_table.add_column("Metric", style="bold", width=28)
+        fm_table.add_column("Value", justify="right")
+        fm_table.add_row("Factors Retained", Text(str(fm['n_factors']), style="cyan"))
+        fm_table.add_row("Explained Variance",
+                         Text(f"{fm['explained_variance'] * 100:.1f}%", style="cyan"))
+        for asset, idio in fm['idiosyncratic_std'].items():
+            fm_table.add_row(f"Idiosyncratic std ({asset})",
+                             format_percentage(idio))
+        console.print(fm_table)
         console.print()
 
     # Portfolio stats
@@ -1164,4 +1231,102 @@ def format_portfolio_results(data: Dict[str, Any]) -> None:
         for name, value in stress.items():
             stress_table.add_row(Text(name.replace('_', ' ')), format_percentage(value))
         console.print(stress_table)
+        console.print()
+
+
+def _params_text(params) -> str:
+    if not params:
+        return "n/a"
+    return ", ".join(f"{k}={v}" for k, v in sorted(params.items()))
+
+
+def format_paper_trade_results(
+    state: Dict[str, Any],
+    previous: Dict[str, Any],
+    ticker: str,
+    strategy_label: str
+) -> None:
+    """
+    Display the paper-trading harness state.
+
+    Args:
+        state: Fresh state dict from paper_trade.paper_trade()
+        previous: Previously persisted state (or None)
+        ticker: Ticker symbol
+        strategy_label: Strategy label
+    """
+    panel = Panel(
+        "[dim]The strategy was re-selected every trading day on trailing data "
+        "only, then run on the next bar with the same costs as the backtester. "
+        "This is a monitoring harness - it does not place orders.[/dim]",
+        title=f"PAPER TRADING - {ticker.upper()} - {strategy_label}",
+        border_style="magenta",
+        box=box.ROUNDED,
+    )
+    console.print()
+    console.print(panel)
+    console.print()
+
+    table = Table(title="Paper Account", box=box.ROUNDED, show_header=False,
+                  show_lines=True, title_style="bold cyan")
+    table.add_column("Metric", style="bold", width=32)
+    table.add_column("Value", justify="right")
+
+    table.add_row("Horizon", Text(f"{state.get('start')} -> {state.get('end')}", style="cyan"))
+    table.add_row("Days Tracked", Text(str(state.get('n_days', 0)), style="cyan"))
+    table.add_row("Ensemble", Text(str(state.get('ensemble'))))
+
+    # param drift vs the previous run
+    if previous and previous.get('current_params') and state.get('current_params'):
+        same = previous['current_params'] == state['current_params']
+        table.add_row(
+            "Current Params",
+            Text(_params_text(state['current_params']), style="yellow")
+            + Text(("  (unchanged)" if same else "  (changed since last run)"),
+                   style="dim" if same else "bold")
+        )
+    else:
+        table.add_row("Current Params", Text(_params_text(state.get('current_params')), style="yellow"))
+
+    if previous:
+        new_days = state.get('n_days', 0) - previous.get('n_days', 0)
+        table.add_row(
+            "New Days Since Last Run",
+            Text(f"{new_days:+d}" if new_days else "none yet", style="cyan" if new_days else "dim")
+        )
+
+    table.add_section()
+    table.add_row("Paper Total Return", format_percentage(state.get('paper_total_return', np.nan)))
+    table.add_row("Paper Annual Return", format_percentage(state.get('paper_annual_return', np.nan)))
+    table.add_row("Paper Sharpe", format_ratio(state.get('paper_sharpe', np.nan)))
+    table.add_row("Buy & Hold Total Return",
+                  format_percentage(state.get('baseline_total_return', np.nan)))
+    table.add_row("Buy & Hold Annual Return",
+                  format_percentage(state.get('baseline_annual_return', np.nan)))
+
+    table.add_section()
+    table.add_row("Alpha (annualized)", format_percentage(state.get('alpha', np.nan)))
+    table.add_row("Active Return (annualized)",
+                  format_percentage(state.get('active_return', np.nan)))
+    table.add_row("Information Ratio", format_ratio(state.get('information_ratio', np.nan)))
+    table.add_row("Hit Rate (days beating baseline)",
+                  format_percentage(state.get('hit_rate', np.nan)))
+
+    console.print(table)
+    console.print()
+
+    selection = state.get('param_selection_rate') or {}
+    if selection:
+        rate_table = Table(title="Config Selection Rate (days as argmax)",
+                           box=box.ROUNDED, title_style="bold yellow")
+        rate_table.add_column("Config", style="bold")
+        rate_table.add_column("% of days selected", justify="right")
+        for key, frac in selection.items():
+            try:
+                params = json.loads(key)
+                label = _params_text(params)
+            except Exception:
+                label = str(key)
+            rate_table.add_row(Text(label, style="yellow"), Text(f"{frac*100:.1f}%"))
+        console.print(rate_table)
         console.print()

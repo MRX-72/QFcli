@@ -11,7 +11,7 @@ Everything is pure pandas/numpy and deterministic, so the whole module is
 testable offline with synthetic price series.
 """
 
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -399,6 +399,87 @@ def parse_param_grid(text: str) -> List[Dict]:
     return [dict(zip(keys, combo)) for combo in product(*(axes[k] for k in keys))]
 
 
+def _select_best_params(
+    train: pd.Series,
+    strategy: Callable,
+    param_grid: List[Dict],
+    selection_metric: str,
+    sizer: str,
+    sizer_kwargs: Optional[Dict],
+    cost_bps: float,
+    slippage_bps: float,
+    risk_free_rate: float
+) -> Tuple[Dict, float]:
+    """
+    Pick the grid point with the best training-window score (no lookahead).
+
+    Returns (params, best_score). NaN/invalid training scores are treated as
+    -inf so degenerate configurations are never selected.
+    """
+    best = None
+    best_score = -np.inf
+    for params in param_grid:
+        res = run_backtest(
+            train, strategy,
+            cost_bps=cost_bps, slippage_bps=slippage_bps,
+            risk_free_rate=risk_free_rate,
+            sizer=sizer, sizer_kwargs=sizer_kwargs,
+            **params
+        )
+        score = res[f'strategy_{selection_metric}']
+        if score is None or (isinstance(score, float) and np.isnan(score)):
+            score = -np.inf
+        if score > best_score:
+            best_score = score
+            best = params
+    return best, best_score
+
+
+def _ensemble_weights(scores: List[float], method: str, topk: Optional[int]) -> np.ndarray:
+    """
+    Compute non-negative per-param weights for out-of-sample blending.
+
+    Schemes:
+        best  - one-hot argmax (single best config)
+        equal - equal weights across the whole grid
+        rank  - weights proportional to the rank of each config's training
+                score (ties averaged). The best config gets the most weight but
+                alternatives are not thrown away - a cheap form of robustness
+                against choosing the wrong winner.
+        topk  - equal weights on the top-k configs only (default k = half the
+                grid, at least 2), everything else zero.
+
+    Weights always sum to 1.
+    """
+    n = len(scores)
+    if n == 0:
+        raise ValueError("Cannot combine an empty grid.")
+    arr = pd.Series(scores, dtype=float)
+
+    if method == 'best':
+        best = int(arr.idxmax())
+        w = np.zeros(n)
+        w[best] = 1.0
+        return w
+
+    if method == 'equal':
+        return np.full(n, 1.0 / n)
+
+    if method == 'rank':
+        ranks = arr.rank(method='average', ascending=True).to_numpy()
+        return ranks / ranks.sum()
+
+    if method == 'topk':
+        ranks = arr.rank(method='average', ascending=True).to_numpy()
+        k = int(min(max(int(topk) if topk else max(2, n // 2), 1), n))
+        keep = ranks >= (n - k + 1)   # best k configs (ties at the cut stay in)
+        w = keep.astype(float)
+        return w / w.sum()
+
+    raise ValueError(f"Unknown ensemble method '{method}' "
+                     f"(choose 'best', 'equal', 'rank' or 'topk').")
+
+
 def walk_forward(
     prices: pd.Series,
     strategy: Callable,
@@ -411,7 +492,9 @@ def walk_forward(
     train_frac: float = 0.6,
     step: int = 63,
     selection_metric: str = 'sharpe',
-    min_test: int = 30
+    min_test: int = 30,
+    ensemble: str = 'best',
+    topk: Optional[int] = None
 ) -> Dict:
     """
     Walk-forward (expanding-window) validation of a strategy's parameters.
@@ -427,6 +510,17 @@ def walk_forward(
     This is the defensible way to answer *"does tuning actually survive out of
     sample?"*: parameters are chosen on data the test fold has never seen.
 
+    By default the single best grid point (by training score) is run out of
+    sample. With ``ensemble`` you can instead blend every grid point's OOS
+    returns, which is significantly more robust than betting on one winner:
+        - 'equal' averages all configs (average model, lowest variance)
+        - 'rank' weights configs by their training-score rank (ties averaged)
+        - 'topk' averages the top-k configs only
+    Blends never add alpha that the individual configs don't have - they only
+    reduce the variance of *parameter selection*. The returns that only the
+    best config would have produced are still reported
+    (``best_oos_total_return``) so the two can be compared honestly.
+
     Note: the exact day between two adjacent folds is not traded, so the
     stitched equity curve compounds across a small non-traded gap.
 
@@ -441,10 +535,13 @@ def walk_forward(
         selection_metric: Strategy metric maximized on the training window
             (e.g. 'sharpe', 'sortino', 'annual_return')
         min_test: Minimum test-window length in days
+        ensemble: How to combine grid points out of sample: 'best' (default),
+            'equal', 'rank' or 'topk'
+        topk: Number of configs averaged by 'topk' (default: half the grid, min 2)
 
     Returns:
         Dict with aggregate out-of-sample stats, benchmark-adjusted evaluation,
-        fold-level details and the chosen selection_metric
+        fold-level details and the chosen selection_metric / ensemble method
     """
     clean = prices.dropna()
     n = len(clean)
@@ -459,6 +556,7 @@ def walk_forward(
 
     folds: List[Dict] = []
     oos_parts: List[pd.Series] = []
+    best_parts: List[pd.Series] = []
     baseline_parts: List[pd.Series] = []
 
     start = oos_start
@@ -470,49 +568,80 @@ def walk_forward(
         train = clean.iloc[:start]
         test = clean.iloc[start:test_end]
 
-        best = None
-        best_score = -np.inf
+        best, best_score = _select_best_params(
+            train, strategy, param_grid, selection_metric,
+            sizer, sizer_kwargs, cost_bps, slippage_bps, risk_free_rate
+        )
+
+        # run every grid point out of sample so the fold can be blended
+        per_param: List[Tuple[Dict, float, pd.Series, pd.Series]] = []
         for params in param_grid:
-            res = run_backtest(
+            oos_res = run_backtest(
+                test, strategy,
+                cost_bps=cost_bps, slippage_bps=slippage_bps,
+                risk_free_rate=risk_free_rate,
+                sizer=sizer, sizer_kwargs=sizer_kwargs,
+                **params
+            )
+            # training score (recomputed cheaply on the train window) is used
+            # for rank/topk weighting
+            train_res = run_backtest(
                 train, strategy,
                 cost_bps=cost_bps, slippage_bps=slippage_bps,
                 risk_free_rate=risk_free_rate,
                 sizer=sizer, sizer_kwargs=sizer_kwargs,
                 **params
             )
-            score = res[f'strategy_{selection_metric}']
-            if score is None or (isinstance(score, float) and np.isnan(score)):
-                score = -np.inf
-            if score > best_score:
-                best_score = score
-                best = params
+            tscore = train_res[f'strategy_{selection_metric}']
+            if tscore is None or (isinstance(tscore, float) and np.isnan(tscore)):
+                tscore = -np.inf
+            per_param.append((params, float(tscore),
+                              oos_res['_strategy_daily_returns'],
+                              oos_res['_baseline_daily_returns']))
 
-        oos = run_backtest(
-            test, strategy,
-            cost_bps=cost_bps, slippage_bps=slippage_bps,
-            risk_free_rate=risk_free_rate,
-            sizer=sizer, sizer_kwargs=sizer_kwargs,
-            **best
-        )
+        scores = [s for _, s, _, _ in per_param]
+        weights = _ensemble_weights(scores, ensemble, topk)
+
+        blended = pd.Series(0.0, index=per_param[0][2].index, dtype=float)
+        best_daily = per_param[0][2]
+        for (params, _, oos_d, _), w in zip(per_param, weights):
+            blended = blended + w * oos_d.fillna(0.0)
+            if params == best:
+                best_daily = oos_d
+        blended = blended.replace([np.inf, -np.inf], np.nan)
+
+        baseline_daily = per_param[0][3]
+
+        oos_total = float((1 + blended.dropna()).cumprod().iloc[-1] - 1) \
+            if len(blended.dropna()) else 0.0
+        best_total = float((1 + best_daily.dropna()).cumprod().iloc[-1] - 1) \
+            if len(best_daily.dropna()) else 0.0
+        baseline_total = float((1 + baseline_daily.dropna()).cumprod().iloc[-1] - 1) \
+            if len(baseline_daily.dropna()) else 0.0
 
         folds.append({
             'test_start': int(start),
             'test_end': test_end,
             'best_params': best,
-            'oos_n_days': int(oos['n_days']),
+            'n_params': len(param_grid),
+            'ensemble': ensemble,
             'selected_train_score': float(best_score),
-            'oos_strategy_total_return': oos['strategy_total_return'],
-            'oos_baseline_total_return': oos['baseline_total_return'],
-            'beat_baseline': bool(oos['strategy_total_return'] > oos['baseline_total_return']),
+            'oos_n_days': int(len(blended.dropna())),
+            'oos_strategy_total_return': oos_total,
+            'oos_best_total_return': best_total,
+            'oos_baseline_total_return': baseline_total,
+            'beat_baseline': bool(oos_total > baseline_total),
         })
-        oos_parts.append(oos['_strategy_daily_returns'])
-        baseline_parts.append(oos['_baseline_daily_returns'])
+        oos_parts.append(blended)
+        best_parts.append(best_daily)
+        baseline_parts.append(baseline_daily)
         start += step
 
     if not folds:
         raise ValueError("No complete walk-forward folds could be built; reduce train_frac or step.")
 
     oos_returns = pd.concat(oos_parts)
+    best_returns = pd.concat(best_parts)
     oos_baseline = pd.concat(baseline_parts)
 
     def _agg(series: pd.Series) -> Dict:
@@ -525,6 +654,7 @@ def walk_forward(
         }
 
     agg = _agg(oos_returns)
+    best_agg = _agg(best_returns)
     base = _agg(oos_baseline)
     active = active_performance(oos_returns, oos_baseline, risk_free_rate=risk_free_rate)
 
@@ -532,6 +662,8 @@ def walk_forward(
         'oos_total_return': agg['total_return'],
         'oos_annual_return': agg['annual_return'],
         'oos_sharpe': agg['sharpe'],
+        'best_oos_total_return': best_agg['total_return'],
+        'best_oos_annual_return': best_agg['annual_return'],
         'baseline_total_return': base['total_return'],
         'baseline_annual_return': base['annual_return'],
         'alpha': active['alpha'],
@@ -543,6 +675,7 @@ def walk_forward(
         'n_folds': len(folds),
         'fold_beat_rate': float(np.mean([f['beat_baseline'] for f in folds])),
         'selection_metric': selection_metric,
+        'ensemble': ensemble,
         'folds': folds,
     }
 

@@ -59,7 +59,12 @@ def _cov_corr(df: pd.DataFrame, method: str = 'lw') -> Tuple[pd.DataFrame, pd.Da
     return cov, corr
 
 
-def covariance_estimator(df: pd.DataFrame, method: str = 'lw') -> pd.DataFrame:
+def covariance_estimator(
+    df: pd.DataFrame,
+    method: str = 'lw',
+    n_factors: Optional[int] = None,
+    min_expl_var: float = 0.8
+) -> pd.DataFrame:
     """
     Estimate a covariance matrix from daily returns.
 
@@ -67,8 +72,12 @@ def covariance_estimator(df: pd.DataFrame, method: str = 'lw') -> pd.DataFrame:
         df: Daily returns DataFrame (columns = assets)
         method: 'sample' for the raw Pearson covariance, 'lw' for
             Ledoit-Wolf style shrinkage toward a constant-correlation target
-            (default). Shrinkage guards against singular/ill-conditioned
-            estimates produced by short overlapping histories.
+            (default), or 'factor' for a low-rank PCA factor-model covariance
+            (common + idiosyncratic components). Shrinkage and the factor model
+            both guard against singular/ill-conditioned estimates produced by
+            short overlapping histories.
+        n_factors: Number of factors for method='factor' (see pca_factor_model)
+        min_expl_var: Explained-variance cutoff for method='factor'
 
     Returns:
         Covariance DataFrame
@@ -80,7 +89,11 @@ def covariance_estimator(df: pd.DataFrame, method: str = 'lw') -> pd.DataFrame:
         return returns.cov()
     if method == 'lw':
         return shrinkage_covariance(returns)
-    raise ValueError(f"Unknown covariance estimator '{method}' (expected 'sample' or 'lw').")
+    if method == 'factor':
+        from .factor_model import factor_model_cov
+        return factor_model_cov(returns, n_factors=n_factors, min_expl_var=min_expl_var)
+    raise ValueError(f"Unknown covariance estimator '{method}' "
+                     f"(expected 'sample', 'lw' or 'factor').")
 
 
 def shrinkage_covariance(returns: pd.DataFrame) -> pd.DataFrame:
@@ -367,26 +380,34 @@ def black_litterman(
     risk_aversion: float = 2.5,
     tau: float = 0.05,
     cov_method: str = 'lw',
-    risk_free_rate: float = 0.0
+    risk_free_rate: float = 0.0,
+    prior_returns: Optional[pd.Series] = None,
+    prior_label: str = 'implied'
 ) -> Dict:
     """
     Black-Litterman "light" portfolio construction, numpy-only.
 
     Steps:
         1. Estimate the covariance with shrinkage (default 'lw').
-        2. Reverse-optimize implied equilibrium returns from a reference
-           portfolio (default: equal weight).
+        2. Build the prior mean: reverse-optimize implied equilibrium returns
+           from a reference portfolio (default: equal weight). If
+           ``prior_returns`` is given (e.g. a Fama-French factor-model prior),
+           it replaces the reverse-optimized prior entirely.
         3. If absolute *views* (asset -> target annual excess return) are
            given, blend them into the posterior mean with the standard
            closed-form update:
                mu_post = pi + tau*S P' (P tau*S P' + Omega)^-1 (q - P pi)
         4. Return the tangency weights on (mu_post, S).
 
-    Without views the posterior equals the prior and - under the model - the
-    tangency portfolio reproduces the reference weights, so *views are the
-    only source of tilts*. ``view_confidence`` is the per-view error *variance*
-    in annual return units; smaller values trust the view more (default is
-    0.0025, i.e. a 5% error standard deviation).
+    Without views the posterior equals the prior. With the default implied
+    prior, the tangency portfolio reproduces the reference weights
+    (*views are the only source of tilts*). When a factor-model ``prior_returns``
+    is substituted, that clean reproduction property no longer holds - the prior
+    itself now tilts the portfolio.
+
+    ``view_confidence`` is the per-view error *variance* in annual return units;
+    smaller values trust the view more (default is 0.0025, i.e. a 5% error
+    standard deviation).
 
     Args:
         returns: Daily returns DataFrame (columns = assets)
@@ -395,12 +416,17 @@ def black_litterman(
         view_confidence: Per-view error variance (float = same for all, or list)
         risk_aversion: Risk-aversion coefficient for step 2 (default: 2.5)
         tau: Confidence scale on the prior covariance (default: 0.05)
-        cov_method: Covariance estimator for step 1 ('sample' or 'lw')
+        cov_method: Covariance estimator for step 1 ('sample', 'lw' or 'factor')
         risk_free_rate: Annual risk-free rate (deflates the tangency weights)
+        prior_returns: Optional annualized excess expected-return prior Series
+            replacing the reverse-optimized implied returns (e.g. from
+            factor_model.ff_expected_returns)
+        prior_label: Label for the prior source ('implied', 'ff', ...)
 
     Returns:
         Dict with weights (Series, sum to 1), implied_returns, posterior_returns,
-        prior_weights and cov (annualized)
+        prior_returns (the prior actually used), prior_label, prior_weights and
+        cov (annualized)
     """
     ret = returns.dropna(how='any')
     if len(ret.columns) < 2:
@@ -414,7 +440,12 @@ def black_litterman(
     else:
         prior_weights = prior_weights.reindex(cov.index).fillna(0.0)
 
-    pi = implied_returns(cov, prior_weights, risk_aversion=risk_aversion)
+    pi_implied = implied_returns(cov, prior_weights, risk_aversion=risk_aversion)
+
+    if prior_returns is not None:
+        pi = prior_returns.reindex(cov.index).fillna(0.0)
+    else:
+        pi = pi_implied
 
     if views:
         assets = sorted(views.keys())
@@ -452,7 +483,9 @@ def black_litterman(
 
     return {
         'weights': weights,
-        'implied_returns': pi,
+        'implied_returns': pi_implied,
+        'prior_returns': pi,
+        'prior_label': prior_label,
         'posterior_returns': posterior_returns,
         'prior_weights': prior_weights,
         'cov': cov,
@@ -473,7 +506,8 @@ def build_portfolio_report(
     returns: pd.DataFrame,
     risk_free_rate: float = 0.0,
     bl: Optional[Dict] = None,
-    cov_method: str = 'lw'
+    cov_method: str = 'lw',
+    ff: Optional[Dict] = None
 ) -> Dict:
     """
     Build the full display-ready portfolio report.
@@ -485,10 +519,14 @@ def build_portfolio_report(
             'black_litterman' weights row and the implied/posterior expected
             returns are attached to the report
         cov_method: Covariance estimator for the mean-variance builders
+            ('sample', 'lw' or 'factor')
+        ff: Optional dict from factor_model.ff_betas()/factor_premia()/... used
+            to render the Fama-French exposure panel and (when combined with
+            black_litterman) a factor-model expected-return prior
 
     Returns:
-        Dict with weights (DataFrame), stats, correlation, frontier, stress and
-        (optional) black_litterman detail
+        Dict with weights (DataFrame), stats, correlation, frontier, stress,
+        optional black_litterman detail and optional factor model / ff panels
     """
     ret = returns.dropna(how='any')
     if len(ret.columns) < 2:
@@ -525,19 +563,24 @@ def build_portfolio_report(
     corr = correlation_matrix(ret)
     stress = stress_test(eff_w, ret)
 
-    report = {
+    report: Dict = {
         'weights': weights,
         'tickers': tickers,
         'stats': eff_stats,
         'frontier_risk': frontier_risk,
         'correlation': corr,
         'stress': stress,
+        'cov_method': cov_method,
     }
     if bl is not None:
-        bl_detail = {
+        report['bl'] = {
             'implied_returns': {
                 t: float(v) for t, v in bl['implied_returns'].items()
             },
+            'prior_returns': {
+                t: float(v) for t, v in bl['prior_returns'].items()
+            },
+            'prior_label': bl['prior_label'],
             'posterior_returns': {
                 t: float(v) for t, v in bl['posterior_returns'].items()
             },
@@ -545,7 +588,29 @@ def build_portfolio_report(
                 t: float(v) for t, v in bl['prior_weights'].items()
             },
         }
-        report['bl'] = bl_detail
+    if cov_method == 'factor':
+        from .factor_model import pca_factor_model
+        try:
+            fm = pca_factor_model(ret)
+            report['factor_model'] = {
+                'n_factors': fm['n_factors'],
+                'explained_variance': fm['explained_variance'],
+                'idiosyncratic_std': {
+                    t: float(v) for t, v in fm['idiosyncratic_std'].items()
+                },
+            }
+        except ValueError:
+            report['factor_model'] = None
+    if ff is not None:
+        report['ff'] = {
+            'betas': ff['betas'].to_dict(orient='index'),
+            'alpha_annual': {
+                t: float(v) for t, v in ff['alpha_annual'].items()
+            },
+            'premia': {
+                f: float(v) for f, v in ff['premia'].items()
+            },
+        }
     return report
 
 

@@ -13,6 +13,7 @@ from quant_finance.backtest import (
     parse_param_grid,
     size_position,
     walk_forward,
+    _ensemble_weights,
 )
 
 
@@ -270,3 +271,82 @@ class TestWalkForward:
         with pytest.raises(ValueError):
             walk_forward(prices, BUILTIN_STRATEGIES['sma_cross'],
                          [{'fast': 10, 'slow': 30}], step=40)
+
+
+class TestEnsembleWeights:
+    def test_best_is_one_hot_argmax(self):
+        w = _ensemble_weights([0.1, 0.5, 0.9], 'best', None)
+        assert (w == np.array([0., 0., 1.])).all()
+
+    def test_equal_sums_to_one(self):
+        assert _ensemble_weights([0.1, 0.5, 0.9], 'equal', None) == pytest.approx(
+            [1 / 3, 1 / 3, 1 / 3])
+
+    def test_rank_positive_and_sum_one(self):
+        w = _ensemble_weights([0.1, 0.5, 0.9], 'rank', None)
+        assert w.sum() == pytest.approx(1.0)
+        assert (w >= 0).all()
+        assert w[2] > w[1] > w[0]  # best config gets the most weight
+
+    def test_topk_zeros_below_k(self):
+        w = _ensemble_weights([0.1, 0.5, 0.9], 'topk', 2)
+        assert w[2] == pytest.approx(0.5)
+        assert w[1] == pytest.approx(0.5)
+        assert w[0] == pytest.approx(0.0)
+
+    def test_topk_default_k(self):
+        w = _ensemble_weights([0.1, 0.2, 0.3, 0.4], 'topk', None)
+        # default k = max(2, 4//2) = 2
+        assert (w == np.array([0, 0, 0.5, 0.5])).all()
+
+    def test_topk_caps_at_n(self):
+        w = _ensemble_weights([0.1, 0.9], 'topk', 5)
+        assert len(w) == 2 and w.sum() == pytest.approx(1.0)
+
+    def test_ties_break_average(self):
+        w = _ensemble_weights([0.5, 0.5, 0.0], 'rank', None)
+        assert w[0] == pytest.approx(w[1])
+
+    def test_unknown_raises(self):
+        with pytest.raises(ValueError):
+            _ensemble_weights([0.1, 0.9], 'bogus', None)
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError):
+            _ensemble_weights([], 'equal', None)
+
+
+class TestWalkForwardEnsemble:
+    def test_best_reproduces_best_reference(self):
+        prices = _trend(days=400, seed=11)
+        grid = parse_param_grid("fast=10,20;slow=40,80")
+        wf = walk_forward(prices, BUILTIN_STRATEGIES['sma_cross'], grid,
+                          train_frac=0.6, step=63, ensemble='best')
+        assert wf['oos_total_return'] == pytest.approx(wf['best_oos_total_return'])
+        assert wf['ensemble'] == 'best'
+
+    def test_equal_blend_reports_keys(self):
+        prices = _trend(days=400, seed=13)
+        grid = parse_param_grid("fast=10,20;slow=40,80")
+        wf = walk_forward(prices, BUILTIN_STRATEGIES['sma_cross'], grid,
+                          train_frac=0.6, step=63, ensemble='equal')
+        assert 'best_oos_total_return' in wf
+        assert wf['ensemble'] == 'equal'
+        assert wf['folds'][0]['n_params'] == len(grid)
+        assert wf['folds'][0]['ensemble'] == 'equal'
+
+    def test_best_config_reference_is_best_only(self):
+        prices = _trend(days=400, seed=17)
+        grid = parse_param_grid("fast=10;slow=40,80,120")
+        best_only = walk_forward(prices, BUILTIN_STRATEGIES['sma_cross'], grid,
+                                 train_frac=0.6, step=63, ensemble='best')
+        equal = walk_forward(prices, BUILTIN_STRATEGIES['sma_cross'], grid,
+                             train_frac=0.6, step=63, ensemble='equal')
+        assert equal['best_oos_total_return'] == pytest.approx(
+            best_only['oos_total_return'], abs=1e-9)
+
+    def test_invalid_ensemble_raises(self):
+        prices = _trend(days=400)
+        with pytest.raises(ValueError):
+            walk_forward(prices, BUILTIN_STRATEGIES['sma_cross'],
+                         [{'fast': 10, 'slow': 40}], ensemble='bogus')
