@@ -215,7 +215,7 @@ def analyze_with_progress(ticker: str, period: str, risk_free_rate: float, bench
         console=console,
         transient=True,
     ) as progress:
-        task = progress.add_task(f"[cyan]Analyzing {ticker.upper()}...", total=None)
+        progress.add_task(f"[cyan]Analyzing {ticker.upper()}...", total=None)
         return analyze_single_stock(ticker, period, risk_free_rate, benchmark_returns,
                                     use_cache=use_cache)
 

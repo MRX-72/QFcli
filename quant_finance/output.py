@@ -5,12 +5,12 @@ Format and display analysis results using Rich library for beautiful CLI output.
 
 from typing import Dict, Any
 import numpy as np
+import pandas as pd
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich import box
-from rich.style import Style
 
 console = Console()
 
@@ -133,7 +133,6 @@ def sparkline_levels(values: list, width: int = 40) -> list:
     if not values or width <= 0:
         return []
 
-    levels = []
     n = len(values)
     if n <= width:
         sampled = values
@@ -724,7 +723,7 @@ def create_recommendation_panel(comparison: Dict[str, Any]) -> Panel:
     content = Text()
     
     # Overall score
-    content.append(f"Overall Score: ", style="bold white")
+    content.append("Overall Score: ", style="bold white")
     content.append(f"{stock1['ticker']} ({rec['score1']})", style="bold cyan")
     content.append(" vs ", style="white")
     content.append(f"{stock2['ticker']} ({rec['score2']})", style="bold cyan")

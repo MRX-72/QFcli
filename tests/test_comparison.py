@@ -1,7 +1,5 @@
 """Tests for the comparison logic (pure dict math, no network)."""
 
-import pytest
-
 from quant_finance.comparison import (
     determine_winners,
     calculate_overall_score,

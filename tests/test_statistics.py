@@ -42,8 +42,9 @@ class TestSharpeSignificance:
 
     def test_constant_returns_zero_vol(self):
         out = sharpe_significance(pd.Series(np.full(100, 0.001)))
-        # zero vol guarded -> returns nonsense p-value but no crash
-        assert 'verdict' in out
+        # zero-vol guard fires cleanly (no crash, no NaN p-value)
+        assert out['verdict'] == 'NOT SIGNIFICANT (zero vol)'
+        assert out['p_value'] == 1.0
 
 
 class TestSharpeBootstrap:
@@ -99,8 +100,7 @@ class TestADF:
 
     def test_stationary_series(self):
         rng = np.random.default_rng(9)
-        y = rng.normal(0, 0.01, 400).cumsum()
-        # mean-reverting slowly (AR(1) with phi ~ 0.9) vs white noise:
+        # white noise is stationary (no unit root)
         w = rng.normal(0, 0.01, 400)
         out = adf_test(pd.Series(w))
         assert out['verdict'] == 'STATIONARY (no unit root)'

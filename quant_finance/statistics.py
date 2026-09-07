@@ -16,7 +16,7 @@ testable offline against synthetic data.
 """
 
 import math
-from typing import Dict, Optional
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -36,9 +36,11 @@ def sharpe_significance(returns, risk_free_rate: float = 0.0, annualize: bool = 
     """
     Jobson & Korkie (1981) test that the Sharpe ratio equals zero.
 
-    The standard error incorporates skewness and excess kurtosis of returns:
+    The standard error (via Lo 2002) incorporates skewness and excess kurtosis
+    of returns (kurtosis here = raw fourth moment gamma4):
 
-        SE = sqrt((1 - skew*SR + (kurt-1)/4 * SR^2) / T)
+        SE = sqrt((1 - skew*SR + (kurt - 1)/4 * SR^2) / T)
+           = sqrt((1 - skew*SR + (excess_kurt + 2)/4 * SR^2) / T)
 
     Args:
         returns: Series/array of daily returns
@@ -56,7 +58,8 @@ def sharpe_significance(returns, risk_free_rate: float = 0.0, annualize: bool = 
     daily_rf = risk_free_rate / 252 if annualize else risk_free_rate
     mu = r.mean() - daily_rf
     sigma = r.std(ddof=1)
-    if sigma == 0:
+    # Treat float-noise-level volatility as zero (constant series).
+    if not np.isfinite(sigma) or sigma <= 1e-10:
         return {'statistic': np.nan, 'p_value': 1.0, 'verdict': 'NOT SIGNIFICANT (zero vol)'}
 
     sr = mu / sigma
@@ -67,9 +70,8 @@ def sharpe_significance(returns, risk_free_rate: float = 0.0, annualize: bool = 
     # Lo (2002) i.i.d. variance for the Sharpe estimator:
     #   Var(SR) ~ (1 - skew*SR + (kurtosis - 1)/4 * SR^2) / T
     # where kurtosis here is the raw fourth-moment measure (gamma4).
-    se = np.sqrt((1 - skew * sr + (kurt_excess + 2) / 4 * sr ** 2) / T)
-    if se <= 0:
-        se = 1e-12
+    se_sq = (1 - skew * sr + (kurt_excess + 2) / 4 * sr ** 2) / T
+    se = np.sqrt(se_sq) if se_sq > 0 else 1e-12
 
     z = sr / se
     p = norm_pvalue_2sided(z)
@@ -109,7 +111,7 @@ def sharpe_bootstrap_ci(
 
     def _sharpe(sample):
         sigma = sample.std(ddof=1)
-        if sigma == 0:
+        if not np.isfinite(sigma) or sigma <= 1e-10:
             return 0.0
         sr = (sample.mean() - daily_rf) / sigma
         return sr * np.sqrt(252) if annualize else sr

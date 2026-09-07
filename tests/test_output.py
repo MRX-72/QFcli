@@ -10,8 +10,32 @@ from quant_finance.output import (
     format_price,
     format_percentage,
     sparkline_levels,
-    gauge_bar
+    gauge_bar,
+    create_correlation_table,
 )
+
+import pandas as pd
+
+
+def _corr_df():
+    idx = pd.date_range("2024-01-01", periods=5, freq="B")
+    df = pd.DataFrame({'A': [0.01, 0.02, -0.01, 0.0, 0.03],
+                       'B': [-0.02, 0.01, 0.01, 0.02, -0.01]}, index=idx)
+    return df.corr()
+
+
+class TestCorrelationTable:
+    def test_builds_heatmap_table(self):
+        tbl = create_correlation_table(_corr_df())
+        assert tbl.title == "Correlation Matrix"
+        assert len(tbl.columns) >= 2
+
+    def test_diagonal_cells_color(self):
+        # exercise _cell_bg mapping without crashing for -1..0..1
+        from quant_finance.output import _cell_bg
+        assert _cell_bg(-1.0) == "red"
+        assert _cell_bg(0.0) == "white"
+        assert _cell_bg(1.0) == "dark_green"
 
 
 class TestExportToDict:

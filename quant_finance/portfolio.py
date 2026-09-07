@@ -17,12 +17,12 @@ The tangency and min-variance solutions are the classic closed forms:
     w_tan  = S^-1 (mu - rf 1) / (1' S^-1 (mu - rf 1))
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
-from .metrics import sharpe_ratio, annual_return, volatility
+from .metrics import sharpe_ratio
 
 
 def returns_matrix(dfs: List[pd.DataFrame]) -> pd.DataFrame:

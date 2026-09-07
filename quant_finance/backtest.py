@@ -11,7 +11,7 @@ Everything is pure pandas/numpy and deterministic, so the whole module is
 testable offline with synthetic price series.
 """
 
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict
 
 import numpy as np
 import pandas as pd

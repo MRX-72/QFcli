@@ -384,7 +384,9 @@ def rolling_sharpe(returns: pd.Series, window: int = 60, risk_free_rate: float =
     roll = returns.dropna().rolling(window=window)
     mean = roll.mean() - daily_rf
     std = roll.std(ddof=1)
-    return (mean / std) * np.sqrt(252)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        sharpe = (mean / std) * np.sqrt(252)
+    return sharpe.replace([np.inf, -np.inf], np.nan)
 
 
 def monte_carlo_forecast(

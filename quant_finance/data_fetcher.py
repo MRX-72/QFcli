@@ -10,7 +10,6 @@ import time
 
 import yfinance as yf
 import pandas as pd
-import numpy as np
 from typing import Tuple, Optional
 
 CACHE_DIR = os.environ.get("QFCLI_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".qfcli", "cache"))
@@ -113,20 +112,6 @@ def calculate_daily_returns(prices: pd.Series) -> pd.Series:
     """
     returns = prices.pct_change()
     return returns
-
-
-def get_price_array(df: pd.DataFrame, column: str = 'Close') -> np.ndarray:
-    """
-    Extract price array from DataFrame.
-    
-    Args:
-        df: DataFrame with price data
-        column: Column name to extract (default: 'Close')
-    
-    Returns:
-        NumPy array of prices
-    """
-    return df[column].values
 
 
 def get_current_price(df: pd.DataFrame) -> float:
